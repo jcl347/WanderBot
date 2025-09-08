@@ -1,14 +1,15 @@
-// lib/db.ts
 import { Pool } from "pg";
 
-const conn = process.env.POSTGRES_URL;
-if (!conn) {
-  throw new Error("POSTGRES_URL is not set (Vercel → Settings → Environment Variables).");
-}
+// prefer POSTGRES_URL; fallback to DATABASE_URL if you ever need it
+const connectionString =
+  process.env.POSTGRES_URL || process.env.DATABASE_URL || "";
 
-export const pool = new Pool({ connectionString: conn });
+export const pool = new Pool({
+  connectionString,
+  ssl: connectionString.includes("neon.tech") ? { rejectUnauthorized: false } : undefined,
+});
 
-export async function q<T = any>(sql: string, params: any[] = []) {
+export async function q<T=any>(sql: string, params: any[] = []) {
   const { rows } = await pool.query(sql, params);
   return rows as T[];
 }
