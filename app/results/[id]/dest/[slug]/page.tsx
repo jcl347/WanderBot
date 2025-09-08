@@ -1,19 +1,16 @@
-// app/results/[id]/dest/[slug]/page.tsx
+// SERVER component – no "use client"
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import BackgroundMap from "@/components/BackgroundMap";
 import SectionCard from "@/components/SectionCard";
 import RobotBadge from "@/components/RobotBadge";
-import MonthLine from "@/components/MonthLine"; // client component
+import MonthLine from "@/components/MonthLine"; // this file must start with "use client"
 import { mockDestinationDetailBySlug } from "@/mocks/destinations";
 
-export default async function DestDetail({
-  params,
-}: {
-  params: Promise<{ id: string; slug: string }>;
-}) {
-  // ✅ Await params in this project’s setup
-  const { id, slug } = await params;
+type PageProps = { params: { id: string; slug: string } };
+
+export default async function DestDetail({ params }: PageProps) {
+  const { id, slug } = params;
 
   const useMock =
     id === "demo" ||
@@ -27,7 +24,7 @@ export default async function DestDetail({
 
   const fares = dest.per_traveler_fares ?? [];
 
-  // Build month series (optional)
+  // Build month series for the line chart (optional)
   const monthSet = new Set<string>();
   fares.forEach((f) => f.monthBreakdown?.forEach((m) => monthSet.add(m.month)));
   const months = Array.from(monthSet).sort();
@@ -42,7 +39,6 @@ export default async function DestDetail({
 
   return (
     <BackgroundMap>
-      {/* Header */}
       <div className="flex items-center justify-between">
         <RobotBadge />
         <Link href={`/results/${id}`} className="text-sm text-sky-700 underline">
