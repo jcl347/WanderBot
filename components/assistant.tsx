@@ -1,12 +1,16 @@
 "use client";
-import React from "react";
+import React, { useEffect } from "react";
 import Chat from "./chat";
 import useConversationStore from "@/stores/useConversationStore";
 import { Item, processMessages } from "@/lib/assistant";
 
 export default function Assistant() {
-  const { chatMessages, addConversationItem, addChatMessage, setAssistantLoading } =
-    useConversationStore();
+  const {
+    chatMessages,
+    addConversationItem,
+    addChatMessage,
+    setAssistantLoading,
+  } = useConversationStore();
 
   const handleSendMessage = async (message: string) => {
     if (!message.trim()) return;
@@ -31,10 +35,7 @@ export default function Assistant() {
     }
   };
 
-  const handleApprovalResponse = async (
-    approve: boolean,
-    id: string
-  ) => {
+  const handleApprovalResponse = async (approve: boolean, id: string) => {
     const approvalItem = {
       type: "mcp_approval_response",
       approve,
@@ -47,6 +48,25 @@ export default function Assistant() {
       console.error("Error sending approval response:", error);
     }
   };
+
+  // 👇 NEW: listen for PreferencesForm "wander:start" event and kick off chat
+  useEffect(() => {
+    function handleAutoStart(e: Event) {
+      // Support both CustomEvent<any> and plain Event
+      const ce = e as CustomEvent<{ prompt?: string }>;
+      const text = ce?.detail?.prompt;
+      if (!text) return;
+      // Reuse the same send path as the chat input
+      handleSendMessage(text);
+    }
+
+    window.addEventListener("wander:start", handleAutoStart as EventListener);
+    return () => {
+      window.removeEventListener("wander:start", handleAutoStart as EventListener);
+    };
+    // handleSendMessage is stable across renders in this component; if yours isn't,
+    // add it to dep array (eslint may warn). For safety, include it:
+  }, [handleSendMessage]);
 
   return (
     <div className="h-full p-4 w-full bg-white">
