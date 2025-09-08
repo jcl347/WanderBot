@@ -1,17 +1,19 @@
-// app/results/[id]/page.tsx  (SERVER COMPONENT – no "use client")
+// app/results/[id]/page.tsx  (SERVER component — no "use client")
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import BackgroundMap from "@/components/BackgroundMap";
 import SectionCard from "@/components/SectionCard";
 import RobotBadge from "@/components/RobotBadge";
-import CostComparisons from "@/components/CostComparisons";
+import CostComparisons from "@/components/CostComparisons"; // <- ensure this filename matches
 import { mockPlan, mockDestinations } from "@/mocks/plan";
 import { q } from "@/lib/db";
 
-type PageProps = { params: Promise<{ id: string }> };
-
-export default async function ResultsPage({ params }: PageProps) {
-  const { id } = await params; // ✅ await params
+export default async function ResultsPage({
+  params,
+}: {
+  params: { id: string };
+}) {
+  const { id } = params;
 
   const useMock =
     id === "demo" ||
@@ -19,7 +21,7 @@ export default async function ResultsPage({ params }: PageProps) {
     process.env.MOCK === "1";
 
   let plan: any;
-  let dests: any[] = [];
+  let dests: Array<{ slug: string; name: string; narrative: string }> = [];
 
   if (useMock) {
     plan = {
@@ -54,6 +56,7 @@ export default async function ResultsPage({ params }: PageProps) {
 
   return (
     <BackgroundMap>
+      {/* Header strip */}
       <div className="flex items-center justify-between">
         <RobotBadge />
         <Link href="/" className="text-sm text-sky-700 underline">
@@ -76,7 +79,7 @@ export default async function ResultsPage({ params }: PageProps) {
       <SectionCard>
         <h2 className="text-lg font-semibold mb-3">Destinations</h2>
         <div className="grid md:grid-cols-2 gap-3">
-          {dests.map((d: any) => (
+          {dests.map((d) => (
             <Link
               key={d.slug}
               href={`/results/${useMock ? "demo" : id}/dest/${d.slug}`}
