@@ -7,6 +7,17 @@ import { parse as partialJsonParse } from "partial-json";
 
 export const runtime = "nodejs"; // required for 'pg' (no edge)
 
+// ---------- helpers ----------
+const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini"; // override in env if you have gpt-5
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+
+// stringify + null-safe
+const toJsonb = (v: unknown) => JSON.stringify(v ?? null);
+
+// safe, short log
+const short = (s: string, n = 400) =>
+  (s || "").slice(0, n) + ((s || "").length > n ? " …[truncated]" : "");
+
 // ---------- input validation ----------
 const Traveler = z.object({
   id: z.string(),
@@ -37,12 +48,7 @@ const PlanSchema = z.object({
         slug: z.string(),
         narrative: z.string(),
         months: z
-          .array(
-            z.object({
-              month: z.string(),
-              note: z.string(),
-            })
-          )
+          .array(z.object({ month: z.string(), note: z.string() }))
           .optional(),
         per_traveler_fares: z.array(
           z.object({
@@ -50,12 +56,7 @@ const PlanSchema = z.object({
             from: z.string(),
             avgUSD: z.number(),
             monthBreakdown: z
-              .array(
-                z.object({
-                  month: z.string(),
-                  avgUSD: z.number(),
-                })
-              )
+              .array(z.object({ month: z.string(), avgUSD: z.number() }))
               .optional(),
           })
         ),
@@ -64,11 +65,11 @@ const PlanSchema = z.object({
     .length(5),
 });
 
-// ---------- OpenAI ----------
-const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini"; // safer default
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
-
 // ---------- prompt ----------
+function slugify(s: string) {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+}
+
 function buildPrompt(input: z.infer<typeof Body>) {
   const { travelers, timeframe, suggestions } = input;
   const dislikes = travelers.find((t) =>
@@ -115,9 +116,12 @@ Output **ONLY JSON** matching this schema (no extra text, no Markdown):
       "name": string,
       "slug": string,              // url-friendly, e.g. "mexico-city"
       "narrative": string,         // opinionated mini-brief
-      "months"?: [{ "month": "YYYY-MM", "note": string }], 
+      "months"?: [{ "month": "YYYY-MM", "note": string }],
       "per_traveler_fares": [
-        { "travelerName": string, "from": string, "avgUSD": number,
+        {
+          "travelerName": string,
+          "from": string,
+          "avgUSD": number,
           "monthBreakdown"?: [{ "month": "YYYY-MM", "avgUSD": number }]
         }
       ]
@@ -127,26 +131,35 @@ Output **ONLY JSON** matching this schema (no extra text, no Markdown):
 `.trim();
 }
 
-// ---------- helpers ----------
-function slugify(s: string) {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "");
-}
-
+// ---------- route ----------
 export async function POST(req: NextRequest) {
+  const reqId = Math.random().toString(36).slice(2, 8); // tiny correlation id for logs
   try {
     if (!process.env.OPENAI_API_KEY) {
       throw new Error("Missing OPENAI_API_KEY");
     }
 
-    const body = Body.parse(await req.json());
-    const prompt = buildPrompt(body);
+    const rawBody = await req.json();
+    console.log(`[plan ${reqId}] Incoming body keys:`, Object.keys(rawBody || {}));
 
-    // Use Chat Completions with enforced JSON
+    // Validate input
+    let body: z.infer<typeof Body>;
+    try {
+      body = Body.parse(rawBody);
+    } catch (e: any) {
+      console.error(`[plan ${reqId}] Zod body validation error:`, e?.errors || e);
+      return new NextResponse("Invalid request body", { status: 400 });
+    }
+
+    const prompt = buildPrompt(body);
+    console.log(
+      `[plan ${reqId}] Model: ${MODEL} | Prompt length: ${prompt.length} chars\n` +
+      `[plan ${reqId}] Prompt head:\n${short(prompt)}`
+    );
+
+    // Ask OpenAI (JSON enforced)
     const completion = await openai.chat.completions.create({
-      model: MODEL, // e.g., "gpt-4o-mini" or your "gpt-5" if you have access
+      model: MODEL,
       response_format: { type: "json_object" },
       messages: [
         { role: "system", content: "You produce strict JSON that matches the spec." },
@@ -155,23 +168,20 @@ export async function POST(req: NextRequest) {
       temperature: 0.4,
     });
 
-    const raw =
-      completion.choices?.[0]?.message?.content?.trim() ||
-      ""; // could be empty if the model failed
+    const raw = completion.choices?.[0]?.message?.content?.trim() || "";
+    console.log(`[plan ${reqId}] OpenAI raw head:\n${short(raw)}`);
+    if (!raw) throw new Error("OpenAI returned empty content");
 
-    if (!raw) {
-      throw new Error("OpenAI returned empty content");
-    }
-
-    // Parse strictly, then fall back to partial-json if needed
+    // Strict parse then fallback to partial
     let json: unknown;
     try {
       json = JSON.parse(raw);
     } catch {
+      console.warn(`[plan ${reqId}] Strict parse failed; attempting partial-json parse`);
       json = partialJsonParse(raw);
     }
 
-    // Normalize slugs if the model missed them
+    // Normalize slugs just in case
     if (
       typeof json === "object" &&
       json !== null &&
@@ -183,7 +193,14 @@ export async function POST(req: NextRequest) {
       }));
     }
 
-    const parsed = PlanSchema.parse(json);
+    // Validate model output
+    let parsed: z.infer<typeof PlanSchema>;
+    try {
+      parsed = PlanSchema.parse(json);
+    } catch (e: any) {
+      console.error(`[plan ${reqId}] Zod output validation error:`, e?.errors || e);
+      return new NextResponse("Model output did not match schema", { status: 400 });
+    }
 
     // Compute totals
     const familySizeFor = (name: string) => {
@@ -222,44 +239,59 @@ export async function POST(req: NextRequest) {
         .sort((a, b) => a.totalGroupUSD - b.totalGroupUSD),
     };
 
-    // Save plan
+    // Sanity log before DB
+    console.log(`[plan ${reqId}] Saving plan:`, {
+      timeframe: body.timeframe,
+      travelersCount: body.travelers.length,
+      destinations: summary.destinations.map((d) => d.slug),
+    });
+
+    // Save plan (JSONB casts)
     const [plan] = await q<{ id: string }>(
       `
-      insert into plans (timeframe, travelers, suggestions, model, final_recommendation, summary)
-      values ($1,$2,$3,$4,$5,$6) returning id
+      INSERT INTO plans
+        (timeframe, travelers, suggestions, model, final_recommendation, summary)
+      VALUES
+        ($1::jsonb, $2::jsonb, $3, $4, $5, $6::jsonb)
+      RETURNING id
     `,
       [
-        body.timeframe,
-        body.travelers,
+        toJsonb(body.timeframe),
+        toJsonb(body.travelers),
         body.suggestions ?? null,
         MODEL,
         parsed.final_recommendation,
-        summary,
+        toJsonb(summary),
       ]
     );
 
-    // Save destinations
+    // Save destinations (JSONB casts)
     for (const d of parsed.destinations) {
       await q(
         `
-        insert into destinations (plan_id, slug, name, narrative, months, per_traveler_fares, totals)
-        values ($1,$2,$3,$4,$5,$6, jsonb_build_object('avgPerPerson', 0, 'totalGroup', 0))
+        INSERT INTO destinations
+          (plan_id, slug, name, narrative, months, per_traveler_fares, totals)
+        VALUES
+          ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb)
       `,
         [
           plan.id,
           d.slug,
           d.name,
           d.narrative,
-          d.months ?? [],
-          JSON.stringify(d.per_traveler_fares),
+          toJsonb(d.months ?? []),
+          toJsonb(d.per_traveler_fares),
+          toJsonb({ avgPerPerson: 0, totalGroup: 0 }),
         ]
       );
     }
 
+    console.log(`[plan ${reqId}] Done. planId=${plan.id}`);
     return NextResponse.json({ planId: plan.id });
   } catch (err: any) {
-    // Bubble helpful detail to logs and client
-    console.error("[/api/plan] Error:", err?.response?.data ?? err?.message ?? err);
+    // Everything important shows in Vercel logs
+    const payload = err?.response?.data ?? err;
+    console.error("[/api/plan] Fatal:", payload);
     const msg =
       err?.response?.data?.error?.message ||
       err?.message ||
