@@ -1,16 +1,17 @@
-// SERVER component – no "use client"
+// app/results/[id]/dest/[slug]/page.tsx
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import BackgroundMap from "@/components/BackgroundMap";
 import SectionCard from "@/components/SectionCard";
 import RobotBadge from "@/components/RobotBadge";
-import MonthLine from "@/components/MonthLine"; // this file must start with "use client"
+import MonthLine from "@/components/MonthLine"; // must be a client component
 import { mockDestinationDetailBySlug } from "@/mocks/destinations";
 
-type PageProps = { params: { id: string; slug: string } };
+type PageProps = { params: Promise<{ id: string; slug: string }> };
 
 export default async function DestDetail({ params }: PageProps) {
-  const { id, slug } = params;
+  // ✅ Next 15: params is a Promise – await it
+  const { id, slug } = await params;
 
   const useMock =
     id === "demo" ||
@@ -24,7 +25,7 @@ export default async function DestDetail({ params }: PageProps) {
 
   const fares = dest.per_traveler_fares ?? [];
 
-  // Build month series for the line chart (optional)
+  // Build month series (optional)
   const monthSet = new Set<string>();
   fares.forEach((f) => f.monthBreakdown?.forEach((m) => monthSet.add(m.month)));
   const months = Array.from(monthSet).sort();

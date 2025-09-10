@@ -1,17 +1,18 @@
-// SERVER component – no "use client"
+// app/results/[id]/page.tsx
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import BackgroundMap from "@/components/BackgroundMap";
 import SectionCard from "@/components/SectionCard";
 import RobotBadge from "@/components/RobotBadge";
-import CostComparisons from "@/components/CostComparisons"; // client component is fine to import
+import CostComparisons from "@/components/CostComparisons"; // must be a client component
 import { mockPlan, mockDestinations } from "@/mocks/plan";
 import { q } from "@/lib/db";
 
-type PageProps = { params: { id: string } };
+type PageProps = { params: Promise<{ id: string }> };
 
 export default async function ResultsPage({ params }: PageProps) {
-  const { id } = params;
+  // ✅ Next 15: params is a Promise – await it
+  const { id } = await params;
 
   const useMock =
     id === "demo" ||
@@ -43,7 +44,12 @@ export default async function ResultsPage({ params }: PageProps) {
   }
 
   const summary = plan.summary as {
-    destinations: { name: string; slug: string; totalGroupUSD: number; avgPerPersonUSD: number }[];
+    destinations: {
+      name: string;
+      slug: string;
+      totalGroupUSD: number;
+      avgPerPersonUSD: number;
+    }[];
   };
 
   return (
