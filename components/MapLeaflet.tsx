@@ -3,29 +3,22 @@
 import React, { useEffect } from "react";
 import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
 import L from "leaflet";
+import "leaflet/dist/leaflet.css";
 
 type Props = {
-  center: [number, number];
-  markerLabel?: string;
+  center?: [number, number];
   zoom?: number;
+  markers?: { id?: string; position: [number, number]; label?: string }[];
+  height?: string;
 };
 
-export default function MapLeaflet({ center, markerLabel = "", zoom = 10 }: Props) {
+export default function MapLeaflet({
+  center = [20, 0],
+  zoom = 2,
+  markers = [],
+  height = "360px",
+}: Props) {
   useEffect(() => {
-    // Inject leaflet CSS only once
-    const id = "leaflet-css";
-    if (!document.getElementById(id)) {
-      const link = document.createElement("link");
-      link.id = id;
-      link.rel = "stylesheet";
-      link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-      document.head.appendChild(link);
-    }
-  }, []);
-
-  // default marker icon fix for many bundlers
-  useEffect(() => {
-    delete (L.Icon.Default as any).prototype._getIconUrl;
     L.Icon.Default.mergeOptions({
       iconRetinaUrl:
         "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png",
@@ -35,14 +28,23 @@ export default function MapLeaflet({ center, markerLabel = "", zoom = 10 }: Prop
   }, []);
 
   return (
-    <MapContainer center={center} zoom={zoom} style={{ height: "100%", width: "100%" }}>
-      <TileLayer
-        attribution='&copy; OpenStreetMap contributors'
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-      />
-      <Marker position={center}>
-        <Popup>{markerLabel}</Popup>
-      </Marker>
-    </MapContainer>
+    <div style={{ width: "100%", height }}>
+      <MapContainer
+        center={center}
+        zoom={zoom}
+        style={{ width: "100%", height: "100%", borderRadius: 12 }}
+        scrollWheelZoom={false}
+      >
+        <TileLayer
+          attribution='&copy; OpenStreetMap contributors'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
+        {markers.map((m, i) => (
+          <Marker key={m.id ?? i} position={m.position}>
+            <Popup>{m.label ?? "Location"}</Popup>
+          </Marker>
+        ))}
+      </MapContainer>
+    </div>
   );
 }

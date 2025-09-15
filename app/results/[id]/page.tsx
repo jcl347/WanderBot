@@ -1,16 +1,17 @@
-// app/results/[id]/page.tsx
+// app/results/[id]/page.tsx  (SERVER component)
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import BackgroundMap from "@/components/BackgroundMap";
 import SectionCard from "@/components/SectionCard";
 import RobotBadge from "@/components/RobotBadge";
-import CostComparisons from "@/components/CostComparisons"; // client wrapper should exist
+import CostComparisons from "@/components/CostComparisons"; // client component
 import { mockPlan, mockDestinations } from "@/mocks/plan";
 import { q } from "@/lib/db";
 
-// Accept `params` as any and await it (Next 15 may pass a Promise)
-export default async function ResultsPage({ params }: { params: any }) {
-  const { id } = await params;
+type PageProps = { params: Promise<{ id: string }> };
+
+export default async function ResultsPage({ params }: PageProps) {
+  const { id } = await params; // <- important
 
   const useMock =
     id === "demo" ||
@@ -68,7 +69,6 @@ export default async function ResultsPage({ params }: { params: any }) {
 
       <SectionCard>
         <h2 className="text-lg font-semibold mb-4">Cost comparison</h2>
-        {/* CostComparisons must be a client component; this file is server-side */}
         <CostComparisons data={summary.destinations} />
       </SectionCard>
 

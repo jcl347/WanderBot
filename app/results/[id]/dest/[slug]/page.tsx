@@ -1,15 +1,16 @@
-// app/results/[id]/dest/[slug]/page.tsx
+// app/results/[id]/dest/[slug]/page.tsx (SERVER)
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import BackgroundMap from "@/components/BackgroundMap";
 import SectionCard from "@/components/SectionCard";
 import RobotBadge from "@/components/RobotBadge";
-import MonthLine from "@/components/MonthLine"; // client chart component
+import MonthLine from "@/components/MonthLine"; // client chart
 import { mockDestinationDetailBySlug } from "@/mocks/destinations";
 
-// Accept params as any and await it for Next 15 compatibility
-export default async function DestDetail({ params }: { params: any }) {
-  const { id, slug } = await params;
+type PageProps = { params: Promise<{ id: string; slug: string }> };
+
+export default async function DestDetail({ params }: PageProps) {
+  const { id, slug } = await params; // <- await params
 
   const useMock =
     id === "demo" ||
@@ -77,9 +78,7 @@ export default async function DestDetail({ params }: { params: any }) {
             </p>
           </>
         ) : (
-          <div className="text-sm text-neutral-500">
-            No month breakdown provided.
-          </div>
+          <div className="text-sm text-neutral-500">No month breakdown provided.</div>
         )}
       </SectionCard>
 
@@ -91,7 +90,7 @@ export default async function DestDetail({ params }: { params: any }) {
               <tr className="text-left">
                 <th className="p-2">Traveler</th>
                 <th className="p-2">From</th>
-                <th className="p-2">Avg USD</th>
+                <th className="p2">Avg USD</th>
               </tr>
             </thead>
             <tbody>
@@ -99,9 +98,7 @@ export default async function DestDetail({ params }: { params: any }) {
                 <tr key={i} className="border-t">
                   <td className="p-2">{f.travelerName}</td>
                   <td className="p-2">{f.from}</td>
-                  <td className="p-2">
-                    ${Math.round(f.avgUSD).toLocaleString()}
-                  </td>
+                  <td className="p-2">${Math.round(f.avgUSD).toLocaleString()}</td>
                 </tr>
               ))}
             </tbody>
