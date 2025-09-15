@@ -8,10 +8,10 @@ type Traveler = {
   id: string;
   name: string;
   relationship?: string;
-  homeLocation: string; // e.g., LAX or "Seattle, WA"
+  homeLocation: string;
   age?: string;
   gender?: string;
-  personality?: string; // e.g., "dislikes travel", "loves beaches"
+  personality?: string;
   isUser?: boolean;
   spouse?: string;
   kids?: string;
@@ -24,13 +24,18 @@ export default function PreferencesForm({
 }) {
   const router = useRouter();
 
-  function safeUuid() {
-    // some environments (older browsers/SSR) might not have crypto.randomUUID
-    try {
-      // @ts-ignore
-      if (typeof crypto?.randomUUID === "function") return crypto.randomUUID();
-    } catch {}
-    return Math.random().toString(36).slice(2);
+  // Lint-safe UUID without ts-ignore
+  function safeUuid(): string {
+    const c: unknown = (globalThis as unknown as { crypto?: { randomUUID?: () => string } }).crypto;
+    if (c && typeof (c as any).randomUUID === "function") {
+      return (c as any).randomUUID();
+    }
+    // RFC4122-ish fallback
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (ch) => {
+      const r = (Math.random() * 16) | 0;
+      const v = ch === "x" ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
   }
 
   function emptyTraveler(initial?: Partial<Traveler>): Traveler {
@@ -49,7 +54,6 @@ export default function PreferencesForm({
     };
   }
 
-  // --- State ---
   const [travelers, setTravelers] = useState<Traveler[]>([
     emptyTraveler({ isUser: true, relationship: "me" }),
   ]);
@@ -58,7 +62,6 @@ export default function PreferencesForm({
   const [suggestions, setSuggestions] = useState<string>("");
   const [saving, setSaving] = useState(false);
 
-  // --- Helpers ---
   function updateTraveler(id: string, patch: Partial<Traveler>) {
     setTravelers((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   }
@@ -69,7 +72,6 @@ export default function PreferencesForm({
     setTravelers((prev) => prev.filter((t) => t.id !== id));
   }
 
-  // --- Submit ---
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
 
@@ -109,7 +111,6 @@ export default function PreferencesForm({
     }
   }
 
-  // --- UI ---
   return (
     <section className="rounded-xl border bg-white p-4 md:p-6 space-y-6">
       <div>

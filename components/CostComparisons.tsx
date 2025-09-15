@@ -10,6 +10,7 @@ import {
   ResponsiveContainer,
   Legend,
   LabelList,
+  Cell,
 } from "recharts";
 
 type Item = {
@@ -20,7 +21,7 @@ type Item = {
 };
 
 export default function CostComparisons({ data }: { data: Item[] }) {
-  // pretty colors (colorblind-friendly-ish palette)
+  // Color palette (friendly + colorblind-aware-ish)
   const palette = [
     "#22c55e", // green
     "#0ea5e9", // sky
@@ -31,7 +32,9 @@ export default function CostComparisons({ data }: { data: Item[] }) {
   ];
 
   const bySlugColor: Record<string, string> = {};
-  data.forEach((d, i) => (bySlugColor[d.slug] = palette[i % palette.length]));
+  data.forEach((d, i) => {
+    bySlugColor[d.slug] = palette[i % palette.length];
+  });
 
   const friendly = (n: number) => `$${Math.round(n).toLocaleString()}`;
 
@@ -46,40 +49,53 @@ export default function CostComparisons({ data }: { data: Item[] }) {
           <BarChart
             data={data}
             margin={{ top: 12, right: 12, left: 12, bottom: 12 }}
+            barCategoryGap={16}
           >
             <XAxis dataKey="name" />
-            <YAxis tickFormatter={(v) => `$${v / 1000}k`} />
+            <YAxis tickFormatter={(v) => `$${Math.round(Number(v)) / 1000}k`} />
             <Tooltip
               formatter={(v: number, key) =>
-                key === "totalGroupUSD" ? [friendly(v), "Group total"] : [friendly(v), "Per person"]
+                key === "totalGroupUSD"
+                  ? [friendly(Number(v)), "Group total"]
+                  : [friendly(Number(v)), "Per person"]
               }
               labelClassName="text-sm font-medium"
             />
             <Legend />
+
+            {/* Group total bar (colored per-destination) */}
             <Bar
               dataKey="totalGroupUSD"
               name="Group total"
               radius={[8, 8, 0, 0]}
               fillOpacity={0.95}
             >
+              {data.map((entry) => (
+                <Cell key={`cell-total-${entry.slug}`} fill={bySlugColor[entry.slug]} />
+              ))}
               <LabelList
                 position="top"
-                formatter={(v: number) => friendly(v)}
+                formatter={(v: number) => friendly(Number(v))}
                 className="text-xs"
               />
-              {data.map((entry, index) => (
-                <svg key={`grad-${entry.slug}`} />
-              ))}
             </Bar>
+
+            {/* Per person bar (a lighter tint of the same color) */}
             <Bar
               dataKey="avgPerPersonUSD"
               name="Per person"
               radius={[8, 8, 0, 0]}
-              fillOpacity={0.8}
+              fillOpacity={0.75}
             >
+              {data.map((entry) => (
+                <Cell
+                  key={`cell-per-${entry.slug}`}
+                  fill={bySlugColor[entry.slug]}
+                />
+              ))}
               <LabelList
                 position="top"
-                formatter={(v: number) => friendly(v)}
+                formatter={(v: number) => friendly(Number(v))}
                 className="text-xs"
               />
             </Bar>
@@ -87,7 +103,7 @@ export default function CostComparisons({ data }: { data: Item[] }) {
         </ResponsiveContainer>
       </div>
 
-      {/* colored legend chips by slug (ties bars to destinations) */}
+      {/* Colored legend chips by slug (ties bars to destinations visually) */}
       <div className="mt-3 flex flex-wrap gap-3">
         {data.map((d) => (
           <div
