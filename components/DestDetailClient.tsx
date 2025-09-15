@@ -10,7 +10,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
   const fares = dest.per_traveler_fares ?? [];
 
   // Build month series; synthesize if missing
-  let monthSet = new Set<string>();
+  const monthSet = new Set<string>(); // ✅ const (fix prefer-const)
   fares.forEach((f: any) => f.monthBreakdown?.forEach((m: any) => monthSet.add(m.month)));
   let months = Array.from(monthSet).sort();
 

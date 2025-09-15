@@ -1,15 +1,16 @@
+// app/results/[id]/dest/[slug]/page.tsx
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import BackgroundMap from "@/components/BackgroundMap";
-import SectionCard from "@/components/SectionCard";
+// import SectionCard from "@/components/SectionCard"; // ❌ remove if unused
 import RobotBadge from "@/components/RobotBadge";
 import DestDetailClient from "@/components/DestDetailClient";
-import { mockDestinationDetailBySlug } from "@/mocks/destinations";
 import { q } from "@/lib/db";
+import { mockDestinationDetailBySlug } from "@/mocks/destinations";
 
-type PageParams = Promise<{ id: string; slug: string }>;
+type PageProps = { params: Promise<{ id: string; slug: string }> };
 
-export default async function DestDetail({ params }: { params: PageParams }) {
+export default async function DestDetail({ params }: PageProps) {
   const { id, slug } = await params;
 
   const useMock =
@@ -17,27 +18,29 @@ export default async function DestDetail({ params }: { params: PageParams }) {
     process.env.NEXT_PUBLIC_MOCK === "1" ||
     process.env.MOCK === "1";
 
-  let dest: any;
-
-  if (useMock) {
-    dest = mockDestinationDetailBySlug[slug];
-  } else {
-    const rows = await q<any>(
-      "select slug, name, narrative, months, per_traveler_fares, analysis, map_center, best_month, avoid_months from destinations where plan_id = $1 and slug = $2",
+  if (!useMock) {
+    const [dest] = await q<any>(
+      "select slug, name, narrative, months, per_traveler_fares, analysis from destinations where plan_id = $1 and slug = $2",
       [id, slug]
     );
-    dest = rows?.[0];
+    if (!dest) return notFound();
+
+    return (
+      <BackgroundMap>
+        <div className="flex items-center justify-between">
+          <RobotBadge />
+          <Link href={`/results/${id}`} className="text-sm text-sky-700 underline">
+            ← Back to results
+          </Link>
+        </div>
+        <DestDetailClient dest={dest} />
+      </BackgroundMap>
+    );
   }
 
+  // mock path
+  const dest = mockDestinationDetailBySlug[slug];
   if (!dest) return notFound();
-
-  // Flatten some fields for the client component
-  const shaped = {
-    ...dest,
-    photos: dest.analysis?.photos ?? dest.highlights?.filter((h: any) => typeof h === "string") ?? undefined,
-    best_month: dest.best_month ?? dest.analysis?.best_month,
-    map_center: dest.map_center,
-  };
 
   return (
     <BackgroundMap>
@@ -47,8 +50,7 @@ export default async function DestDetail({ params }: { params: PageParams }) {
           ← Back to results
         </Link>
       </div>
-
-      <DestDetailClient dest={shaped} />
+      <DestDetailClient dest={dest} />
     </BackgroundMap>
   );
 }

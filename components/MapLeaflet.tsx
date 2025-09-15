@@ -1,22 +1,15 @@
+// components/MapLeaflet.tsx
 "use client";
-
 import dynamic from "next/dynamic";
-import React from "react";
 
-// react-leaflet requires window — load dynamically
-const Leaflet = dynamic(
-  () => import("./MapLeafletInner").then((m) => m.MapLeafletInner),
-  { ssr: false }
-);
+export type LeafletMarker = { position: [number, number]; label?: string };
+type Props = { center: [number, number]; zoom?: number; markers?: LeafletMarker[] };
 
-type Marker = { position: [number, number]; label?: string };
-
-type Props = {
-  center: [number, number];
-  zoom?: number;
-  markers?: Marker[];
-};
+const Inner = dynamic(() => import("./MapLeafletInner"), {
+  ssr: false,
+  loading: () => <div className="h-full w-full animate-pulse rounded-lg bg-sky-100" />,
+});
 
 export default function MapLeaflet(props: Props) {
-  return <Leaflet {...props} />;
+  return <Inner {...props} />;
 }
