@@ -60,6 +60,25 @@ const PlanSchema = z.object({
               .optional(),
           })
         ),
+        // allow optional richer fields — model may or may not include these
+        suggested_month: z.string().optional(),
+        seasonal_warnings: z
+          .array(z.object({ month: z.string(), note: z.string() }))
+          .optional(),
+        satisfies: z
+          .array(z.object({ travelerName: z.string(), reason: z.string() }))
+          .optional(),
+        analytics: z
+          .object({
+            avgUSD: z.number().optional(),
+            varianceUSD: z.number().optional(),
+            cheapestMonth: z.string().optional(),
+            mostExpensiveMonth: z.string().optional(),
+          })
+          .optional(),
+        map_center: z
+          .object({ lat: z.number(), lon: z.number() })
+          .optional(),
       })
     )
     .length(5),
@@ -106,7 +125,8 @@ Rules:
   - "narrative": WHY it fits the group (reference specific people/needs) + a tiny 2–3 bullet micro-itinerary.
   - "per_traveler_fares": average round-trip economy (USD) from each person’s home to destination.
   - Optionally provide "months" notes inside the timeframe (price/seasonality).
-- After listing 5, choose ONE BEST overall pick and explain WHY it’s best in **final_recommendation** (cost + fit tradeoffs).
+  - OPTIONAL: provide "satisfies" (how it satisfies each traveler), "suggested_month" (best month "YYYY-MM"), "seasonal_warnings", "analytics" and "map_center" (lat/lon).
+- After listing 5, choose ONE BEST overall pick and explain WHY it’s best in "final_recommendation" (cost + fit tradeoffs).
 
 Output **ONLY JSON** matching this schema (no extra text, no Markdown):
 {
@@ -114,17 +134,17 @@ Output **ONLY JSON** matching this schema (no extra text, no Markdown):
   "destinations": [
     {
       "name": string,
-      "slug": string,              // url-friendly, e.g. "mexico-city"
-      "narrative": string,         // opinionated mini-brief
+      "slug": string,
+      "narrative": string,
       "months"?: [{ "month": "YYYY-MM", "note": string }],
       "per_traveler_fares": [
-        {
-          "travelerName": string,
-          "from": string,
-          "avgUSD": number,
-          "monthBreakdown"?: [{ "month": "YYYY-MM", "avgUSD": number }]
-        }
-      ]
+        { "travelerName": string, "from": string, "avgUSD": number, "monthBreakdown"?: [{ "month":"YYYY-MM","avgUSD":number}] }
+      ],
+      "satisfies"?: [{ "travelerName": string, "reason": string }],
+      "suggested_month"?: string,
+      "seasonal_warnings"?: [{ "month":"YYYY-MM", "note": string }],
+      "analytics"?: { "avgUSD": number, "varianceUSD": number, "cheapestMonth": string, "mostExpensiveMonth": string },
+      "map_center"?: { "lat": number, "lon": number }
     }
   ] // exactly 5
 }
@@ -199,6 +219,7 @@ export async function POST(req: NextRequest) {
       parsed = PlanSchema.parse(json);
     } catch (e: any) {
       console.error(`[plan ${reqId}] Zod output validation error:`, e?.errors || e);
+      console.error(`[plan ${reqId}] Raw model output:\n${short(JSON.stringify(json || {}), 1000)}`);
       return new NextResponse("Model output did not match schema", { status: 400 });
     }
 
@@ -246,13 +267,13 @@ export async function POST(req: NextRequest) {
       destinations: summary.destinations.map((d) => d.slug),
     });
 
-    // Save plan (JSONB casts)
+    // Save plan (JSONB casts) -> include full model output
     const [plan] = await q<{ id: string }>(
       `
       INSERT INTO plans
-        (timeframe, travelers, suggestions, model, final_recommendation, summary)
+        (timeframe, travelers, suggestions, model, final_recommendation, summary, model_output)
       VALUES
-        ($1::jsonb, $2::jsonb, $3, $4, $5, $6::jsonb)
+        ($1::jsonb, $2::jsonb, $3, $4, $5, $6::jsonb, $7::jsonb)
       RETURNING id
     `,
       [
@@ -262,17 +283,25 @@ export async function POST(req: NextRequest) {
         MODEL,
         parsed.final_recommendation,
         toJsonb(summary),
+        toJsonb(json), // store full model output
       ]
     );
 
-    // Save destinations (JSONB casts)
+    // Save destinations (JSONB casts) -> include analysis column with full destination object
     for (const d of parsed.destinations) {
+      // find matching totals in summary (computed above)
+      const matched = summary.destinations.find((s) => s.slug === d.slug);
+      const totals = {
+        avgPerPerson: matched?.avgPerPersonUSD ?? null,
+        totalGroup: matched?.totalGroupUSD ?? null,
+      };
+
       await q(
         `
         INSERT INTO destinations
-          (plan_id, slug, name, narrative, months, per_traveler_fares, totals)
+          (plan_id, slug, name, narrative, months, per_traveler_fares, totals, analysis)
         VALUES
-          ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb)
+          ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb)
       `,
         [
           plan.id,
@@ -281,7 +310,8 @@ export async function POST(req: NextRequest) {
           d.narrative,
           toJsonb(d.months ?? []),
           toJsonb(d.per_traveler_fares),
-          toJsonb({ avgPerPerson: 0, totalGroup: 0 }),
+          toJsonb(totals),
+          toJsonb(d), // full destination object saved into analysis
         ]
       );
     }

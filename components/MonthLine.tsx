@@ -1,17 +1,16 @@
+// components/MonthLine.tsx
 "use client";
-import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, Legend } from "recharts";
+import { LineChart, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
 
 export default function MonthLine({ data }: { data: any[] }) {
-  if (!data?.length) return null;
-  const keys = Object.keys(data[0]).filter((k) => k !== "month");
-
+  const keys = Object.keys(data[0] || {}).filter(k => k !== "month");
   return (
-    <div className="w-full h-72">
+    <div className="w-full h-64">
       <ResponsiveContainer>
         <LineChart data={data}>
           <XAxis dataKey="month" />
           <YAxis />
-          <Tooltip />
+          <Tooltip formatter={(v:any)=> v ? `$${Math.round(v)}` : "-" } />
           <Legend />
           {keys.map((k) => (
             <Line key={k} type="monotone" dataKey={k} dot={false} />
