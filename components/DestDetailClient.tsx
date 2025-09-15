@@ -1,27 +1,44 @@
 // components/DestDetailClient.tsx
 "use client";
-import React, { useMemo } from "react";
+import React from "react";
 import SectionCard from "./SectionCard";
 import MonthLine from "./MonthLine";
 import MapLeaflet from "./MapLeaflet";
 
-export default function DestDetailClient({ dest }: { dest: any }) {
-  const fares = dest.per_traveler_fares ?? [];
+type Fare = {
+  travelerName: string;
+  from: string;
+  avgUSD: number;
+  monthBreakdown?: { month: string; avgUSD: number }[];
+};
 
+type Dest = {
+  name: string;
+  narrative: string;
+  months?: { month: string; note: string }[];
+  per_traveler_fares?: Fare[];
+  map_center?: { lat: number | string; lon: number | string };
+};
+
+export default function DestDetailClient({ dest }: { dest: Dest }) {
+  const fares = (dest.per_traveler_fares ?? []) as Fare[];
+
+  // Build month series for line chart
   const monthSet = new Set<string>();
-  fares.forEach((f: any) => f.monthBreakdown?.forEach((m: any) => monthSet.add(m.month)));
+  fares.forEach((f) => f.monthBreakdown?.forEach((m) => monthSet.add(m.month)));
   const months = Array.from(monthSet).sort();
   const series = months.map((m) => {
     const row: Record<string, number | string | null> = { month: m };
-    fares.forEach((f: any) => {
+    fares.forEach((f) => {
       row[f.travelerName] =
-        f.monthBreakdown?.find((x: any) => x.month === m)?.avgUSD ?? null;
+        f.monthBreakdown?.find((x) => x.month === m)?.avgUSD ?? null;
     });
     return row;
   });
 
-  // map center fallback — allow dest.map_center or default to world coords
-  const center = dest.map_center ?? { lat: 40, lon: -20 };
+  // Map center with safe number casting
+  const c = dest.map_center ?? { lat: 40, lon: -20 };
+  const center: [number, number] = [Number(c.lat), Number(c.lon)];
 
   return (
     <>
@@ -34,7 +51,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
         <h2 className="text-lg font-semibold mb-3">Monthly notes</h2>
         {dest.months?.length ? (
           <ul className="list-disc pl-6 text-sm">
-            {dest.months.map((m: any) => (
+            {dest.months.map((m) => (
               <li key={m.month}>
                 <span className="font-medium">{m.month}:</span> {m.note}
               </li>
@@ -62,7 +79,15 @@ export default function DestDetailClient({ dest }: { dest: any }) {
       <SectionCard>
         <h2 className="text-lg font-semibold mb-3">Map</h2>
         <div className="h-64">
-          <MapLeaflet center={[center.lat, center.lon]} markerLabel={dest.name} />
+          <MapLeaflet
+            center={center}
+            markers={[
+              {
+                position: center,
+                label: dest.name,
+              },
+            ]}
+          />
         </div>
       </SectionCard>
 
@@ -78,7 +103,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
               </tr>
             </thead>
             <tbody>
-              {fares.map((f: any, i: number) => (
+              {fares.map((f, i) => (
                 <tr key={i} className="border-t">
                   <td className="p-2">{f.travelerName}</td>
                   <td className="p-2">{f.from}</td>
