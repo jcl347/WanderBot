@@ -5,7 +5,7 @@ import PreferencesForm from "@/components/PreferencesForm";
 import WanderHero from "@/components/WanderHero";
 import Link from "next/link";
 
-export default function Main() {
+export default function HomePage() {
   return (
     <div
       className="min-h-screen w-full relative"
@@ -16,13 +16,14 @@ export default function Main() {
         backgroundRepeat: "no-repeat",
       }}
     >
-      {/* Soft overlay so the page isn't too busy */}
+      {/* soft overlay; not interactive and sits behind content */}
       <div className="absolute inset-0 bg-white/75 backdrop-blur-sm pointer-events-none" />
 
       <main className="relative z-10 mx-auto max-w-6xl px-4 py-8 md:py-10 space-y-8">
+        {/* Hero */}
         <WanderHero />
 
-        {/* How it works */}
+        {/* How it works tiles */}
         <section className="grid gap-4 md:grid-cols-4">
           {[
             {
@@ -34,20 +35,26 @@ export default function Main() {
             {
               emoji: "🧮",
               title: "We crunch costs",
-              blurb: "Round-trip averages per traveler and per month for your timeframe.",
+              blurb:
+                "Round-trip averages per traveler and per month for your timeframe.",
             },
             {
               emoji: "🗺️",
               title: "Compare 5 places",
-              blurb: "See why each destination fits your crew, with pros/cons and visuals.",
+              blurb:
+                "Why each destination fits your crew, with pros/cons and visuals.",
             },
             {
               emoji: "🏁",
               title: "Get a pick & charts",
-              blurb: "A clear recommendation plus group-total vs per-person comparisons.",
+              blurb:
+                "A clear recommendation plus group total vs per-person comparisons.",
             },
           ].map((s) => (
-            <div key={s.title} className="rounded-xl border bg-white/80 backdrop-blur-sm p-4 shadow-sm">
+            <div
+              key={s.title}
+              className="rounded-xl border bg-white/80 backdrop-blur-sm p-4 shadow-sm"
+            >
               <div className="text-2xl">{s.emoji}</div>
               <div className="mt-2 font-semibold">{s.title}</div>
               <p className="text-sm text-neutral-600">{s.blurb}</p>
@@ -55,7 +62,7 @@ export default function Main() {
           ))}
         </section>
 
-        {/* The form */}
+        {/* The form (THIS is the PreferencesForm) */}
         <section className="rounded-2xl border bg-white/90 backdrop-blur p-4 md:p-6 shadow-md">
           <PreferencesForm />
           {process.env.NEXT_PUBLIC_SHOW_DEMO === "1" && (
@@ -73,9 +80,9 @@ export default function Main() {
             <h2 className="mb-2 text-base font-semibold">What is this?</h2>
             <p>
               Wander Bot is for <strong>groups that aren’t sure where to go</strong>.
-              It balances interests, estimates flight costs across months and travelers, and presents
-              options in a clean, visual way so you can choose with confidence. It doesn’t book anything—
-              think of it as your unbiased pre-trip analyst.
+              It balances interests, estimates flight costs across months and travelers,
+              and presents options in a clean, visual way so you can choose with confidence.
+              It doesn’t book anything—think of it as your unbiased pre-trip analyst.
             </p>
           </div>
         </footer>
