@@ -1,17 +1,17 @@
-// app/results/[id]/page.tsx  (SERVER component)
+// app/results/[id]/page.tsx
+import Link from "next/link";
+import { notFound } from "next/navigation";
 import BackgroundMap from "@/components/BackgroundMap";
 import SectionCard from "@/components/SectionCard";
 import RobotBadge from "@/components/RobotBadge";
-import ResultsClient from "@/components/ResultsClient"; // client wrapper
-import { q } from "@/lib/db";
-import Link from "next/link";
-import { notFound } from "next/navigation";
+import CostComparisons from "@/components/CostComparisons"; // client wrapper should exist
 import { mockPlan, mockDestinations } from "@/mocks/plan";
+import { q } from "@/lib/db";
 
-type PageProps = { params: { id: string } };
+// Accept `params` as any and await it (Next 15 may pass a Promise)
+export default async function ResultsPage({ params }: { params: any }) {
+  const { id } = await params;
 
-export default async function ResultsPage({ params }: PageProps) {
-  const { id } = params; // synchronous in this shape (Next 15 accepts this)
   const useMock =
     id === "demo" ||
     process.env.NEXT_PUBLIC_MOCK === "1" ||
@@ -41,6 +41,15 @@ export default async function ResultsPage({ params }: PageProps) {
     );
   }
 
+  const summary = plan.summary as {
+    destinations: {
+      name: string;
+      slug: string;
+      totalGroupUSD: number;
+      avgPerPersonUSD: number;
+    }[];
+  };
+
   return (
     <BackgroundMap>
       <div className="flex items-center justify-between">
@@ -57,13 +66,29 @@ export default async function ResultsPage({ params }: PageProps) {
         </p>
       </SectionCard>
 
-      {/* Client-only interactive area */}
-      <ResultsClient
-        plan={plan}
-        destinations={dests}
-        useMock={useMock}
-        planId={plan.id}
-      />
+      <SectionCard>
+        <h2 className="text-lg font-semibold mb-4">Cost comparison</h2>
+        {/* CostComparisons must be a client component; this file is server-side */}
+        <CostComparisons data={summary.destinations} />
+      </SectionCard>
+
+      <SectionCard>
+        <h2 className="text-lg font-semibold mb-3">Destinations</h2>
+        <div className="grid md:grid-cols-2 gap-3">
+          {dests.map((d: any) => (
+            <Link
+              key={d.slug}
+              href={`/results/${useMock ? "demo" : id}/dest/${d.slug}`}
+              className="rounded-xl border p-4 bg-white/90 hover:shadow-sm"
+            >
+              <div className="font-medium">{d.name}</div>
+              <div className="text-sm text-neutral-600 line-clamp-3">
+                {d.narrative}
+              </div>
+            </Link>
+          ))}
+        </div>
+      </SectionCard>
     </BackgroundMap>
   );
 }
