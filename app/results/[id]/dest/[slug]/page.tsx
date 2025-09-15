@@ -1,41 +1,49 @@
-// app/results/[id]/dest/[slug]/page.tsx (SERVER)
+// app/results/[id]/dest/[slug]/page.tsx
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import BackgroundMap from "@/components/BackgroundMap";
 import SectionCard from "@/components/SectionCard";
 import RobotBadge from "@/components/RobotBadge";
-import MonthLine from "@/components/MonthLine"; // client chart
+import DestDetailClient from "@/components/DestDetailClient";
 import { mockDestinationDetailBySlug } from "@/mocks/destinations";
+import { q } from "@/lib/db";
 
 type PageProps = { params: Promise<{ id: string; slug: string }> };
 
 export default async function DestDetail({ params }: PageProps) {
-  const { id, slug } = await params; // <- await params
+  const { id, slug } = await params;
 
   const useMock =
     id === "demo" ||
     process.env.NEXT_PUBLIC_MOCK === "1" ||
     process.env.MOCK === "1";
 
-  if (!useMock) return notFound();
+  let dest: any;
 
-  const dest = mockDestinationDetailBySlug[slug];
-  if (!dest) return notFound();
+  if (useMock) {
+    dest = mockDestinationDetailBySlug[slug];
+    if (!dest) return notFound();
+  } else {
+    const rows = await q<any>(
+      `select slug, name, narrative, months, per_traveler_fares, analysis
+         from destinations
+        where plan_id = $1 and slug = $2
+        limit 1`,
+      [id, slug]
+    );
+    dest = rows?.[0];
+    if (!dest) return notFound();
 
-  const fares = dest.per_traveler_fares ?? [];
-
-  // Build month series (optional)
-  const monthSet = new Set<string>();
-  fares.forEach((f) => f.monthBreakdown?.forEach((m) => monthSet.add(m.month)));
-  const months = Array.from(monthSet).sort();
-  const series = months.map((m) => {
-    const row: Record<string, number | string | null> = { month: m };
-    fares.forEach((f) => {
-      row[f.travelerName] =
-        f.monthBreakdown?.find((x) => x.month === m)?.avgUSD ?? null;
-    });
-    return row;
-  });
+    // merge analysis convenience (map_center, suggested_month, etc.)
+    const a = dest.analysis || {};
+    dest = {
+      ...dest,
+      ...a,
+      // keep original fields
+      months: dest.months || a.months || [],
+      per_traveler_fares: dest.per_traveler_fares || a.per_traveler_fares || [],
+    };
+  }
 
   return (
     <BackgroundMap>
@@ -46,63 +54,16 @@ export default async function DestDetail({ params }: PageProps) {
         </Link>
       </div>
 
-      <SectionCard>
-        <h1 className="text-2xl font-semibold">{dest.name}</h1>
-        <p className="text-neutral-700 whitespace-pre-line mt-2">
-          {dest.narrative}
-        </p>
-      </SectionCard>
+      {/* client component renders charts + leaflet */}
+      <DestDetailClient dest={dest} />
 
+      {/* cute footer card */}
       <SectionCard tight>
-        <h2 className="text-lg font-semibold mb-3">Monthly notes</h2>
-        {dest.months?.length ? (
-          <ul className="list-disc pl-6 text-sm">
-            {dest.months.map((m) => (
-              <li key={m.month}>
-                <span className="font-medium">{m.month}:</span> {m.note}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <div className="text-sm text-neutral-500">No month notes.</div>
-        )}
-      </SectionCard>
-
-      <SectionCard>
-        <h2 className="text-lg font-semibold mb-3">Monthly fare trend</h2>
-        {series.length ? (
-          <>
-            <MonthLine data={series} />
-            <p className="text-xs text-neutral-500 mt-2">
-              Mock averages per traveler (round-trip, USD).
-            </p>
-          </>
-        ) : (
-          <div className="text-sm text-neutral-500">No month breakdown provided.</div>
-        )}
-      </SectionCard>
-
-      <SectionCard>
-        <h2 className="text-lg font-semibold mb-3">Per-traveler average fares</h2>
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr className="text-left">
-                <th className="p-2">Traveler</th>
-                <th className="p-2">From</th>
-                <th className="p2">Avg USD</th>
-              </tr>
-            </thead>
-            <tbody>
-              {fares.map((f, i) => (
-                <tr key={i} className="border-t">
-                  <td className="p-2">{f.travelerName}</td>
-                  <td className="p-2">{f.from}</td>
-                  <td className="p-2">${Math.round(f.avgUSD).toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="flex items-center gap-3">
+          <span className="text-2xl">🤖🎒</span>
+          <p className="text-sm text-neutral-700">
+            Our vacationing robot approves this spot — and is already practicing a beach shuffle.
+          </p>
         </div>
       </SectionCard>
     </BackgroundMap>

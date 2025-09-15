@@ -5,20 +5,25 @@ import { q } from "@/lib/db";
 import OpenAI from "openai";
 import { parse as partialJsonParse } from "partial-json";
 
-export const runtime = "nodejs"; // required for 'pg' (no edge)
+export const runtime = "nodejs"; // pg needs Node runtime
 
-// ---------- helpers ----------
-const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini"; // override in env if you have gpt-5
+// ----------------- helpers -----------------
+const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini"; // override if you have gpt-5
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
-// stringify + null-safe
+// stringify → JSONB safe
 const toJsonb = (v: unknown) => JSON.stringify(v ?? null);
 
-// safe, short log
-const short = (s: string, n = 400) =>
+// short safe logger
+const short = (s: string, n = 600) =>
   (s || "").slice(0, n) + ((s || "").length > n ? " …[truncated]" : "");
 
-// ---------- input validation ----------
+// url slug
+function slugify(s: string) {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+}
+
+// ----------------- input validation -----------------
 const Traveler = z.object({
   id: z.string(),
   name: z.string(),
@@ -38,57 +43,75 @@ const Body = z.object({
   suggestions: z.string().optional(),
 });
 
-// ---------- model output validation ----------
-const PlanSchema = z.object({
-  final_recommendation: z.string(),
-  destinations: z
+// ----------------- model output validation -----------------
+// Be permissive for enriched fields; strict for the core ones we render.
+const MonthNote = z.object({ month: z.string(), note: z.string() });
+const MonthPrice = z.object({ month: z.string(), avgUSD: z.number() });
+
+const Destination = z.object({
+  name: z.string(),
+  slug: z.string(),
+  narrative: z.string(),
+  months: z.array(MonthNote).optional(),
+  per_traveler_fares: z.array(
+    z.object({
+      travelerName: z.string(),
+      from: z.string(),
+      avgUSD: z.number(),
+      monthBreakdown: z.array(MonthPrice).optional(),
+    })
+  ),
+
+  // ----- enriched / optional -----
+  // Either "suggested_month" or "best_month" could be supplied by the model
+  suggested_month: z.string().optional(),
+  best_month: z.string().optional(),
+  seasonal_warnings: z.array(MonthNote).optional(),
+  satisfies: z.array(z.object({ travelerName: z.string(), reason: z.string() })).optional(),
+  analytics: z
+    .object({
+      avgUSD: z.number().optional(),
+      varianceUSD: z.number().optional(),
+      cheapestMonth: z.string().optional(),
+      mostExpensiveMonth: z.string().optional(),
+    })
+    .optional(),
+  map_center: z.object({ lat: z.number(), lon: z.number() }).optional(),
+
+  // Flexible extras
+  analysis: z.record(z.any()).optional(),
+  highlights: z
     .array(
-      z.object({
-        name: z.string(),
-        slug: z.string(),
-        narrative: z.string(),
-        months: z
-          .array(z.object({ month: z.string(), note: z.string() }))
-          .optional(),
-        per_traveler_fares: z.array(
-          z.object({
-            travelerName: z.string(),
-            from: z.string(),
-            avgUSD: z.number(),
-            monthBreakdown: z
-              .array(z.object({ month: z.string(), avgUSD: z.number() }))
-              .optional(),
-          })
-        ),
-        // allow optional richer fields — model may or may not include these
-        suggested_month: z.string().optional(),
-        seasonal_warnings: z
-          .array(z.object({ month: z.string(), note: z.string() }))
-          .optional(),
-        satisfies: z
-          .array(z.object({ travelerName: z.string(), reason: z.string() }))
-          .optional(),
-        analytics: z
-          .object({
-            avgUSD: z.number().optional(),
-            varianceUSD: z.number().optional(),
-            cheapestMonth: z.string().optional(),
-            mostExpensiveMonth: z.string().optional(),
-          })
-          .optional(),
-        map_center: z
-          .object({ lat: z.number(), lon: z.number() })
-          .optional(),
-      })
+      z.union([
+        z.string(),
+        z.object({ title: z.string(), detail: z.string().optional() }),
+      ])
     )
-    .length(5),
+    .optional(),
+  avoid_months: z
+    .array(
+      z.union([
+        z.string(),
+        z.object({ month: z.string(), reason: z.string().optional() }),
+      ])
+    )
+    .optional(),
 });
 
-// ---------- prompt ----------
-function slugify(s: string) {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
-}
+const PlanSchema = z.object({
+  final_recommendation: z.string(),
+  // Optional top-level fit summary for the group
+  group_fit: z
+    .object({
+      summary: z.string().optional(),
+      priorities: z.array(z.string()).optional(),
+      notes: z.array(z.string()).optional(),
+    })
+    .optional(),
+  destinations: z.array(Destination).length(5),
+});
 
+// ----------------- prompt -----------------
 function buildPrompt(input: z.infer<typeof Body>) {
   const { travelers, timeframe, suggestions } = input;
   const dislikes = travelers.find((t) =>
@@ -125,12 +148,22 @@ Rules:
   - "narrative": WHY it fits the group (reference specific people/needs) + a tiny 2–3 bullet micro-itinerary.
   - "per_traveler_fares": average round-trip economy (USD) from each person’s home to destination.
   - Optionally provide "months" notes inside the timeframe (price/seasonality).
-  - OPTIONAL: provide "satisfies" (how it satisfies each traveler), "suggested_month" (best month "YYYY-MM"), "seasonal_warnings", "analytics" and "map_center" (lat/lon).
+  - OPTIONAL enrichments to help our UI:
+    • "satisfies": [{ "travelerName", "reason" }]
+    • "best_month" (or "suggested_month"): one "YYYY-MM"
+    • "seasonal_warnings": [{ "month","note" }]
+    • "highlights": array of strings or {title,detail}
+    • "analytics": { "avgUSD", "varianceUSD", "cheapestMonth", "mostExpensiveMonth" }
+    • "map_center": { "lat", "lon" }
+
+- ALSO provide a top-level "group_fit" with a short "summary" of what this group seems to want.
+
 - After listing 5, choose ONE BEST overall pick and explain WHY it’s best in "final_recommendation" (cost + fit tradeoffs).
 
-Output **ONLY JSON** matching this schema (no extra text, no Markdown):
+Output **ONLY JSON** matching this shape (no extra text, no Markdown):
 {
   "final_recommendation": string,
+  "group_fit"?: { "summary"?: string, "priorities"?: string[], "notes"?: string[] },
   "destinations": [
     {
       "name": string,
@@ -138,12 +171,13 @@ Output **ONLY JSON** matching this schema (no extra text, no Markdown):
       "narrative": string,
       "months"?: [{ "month": "YYYY-MM", "note": string }],
       "per_traveler_fares": [
-        { "travelerName": string, "from": string, "avgUSD": number, "monthBreakdown"?: [{ "month":"YYYY-MM","avgUSD":number}] }
+        { "travelerName": string, "from": string, "avgUSD": number, "monthBreakdown"?: [{ "month":"YYYY-MM","avgUSD": number }] }
       ],
       "satisfies"?: [{ "travelerName": string, "reason": string }],
-      "suggested_month"?: string,
+      "best_month"?: string,
       "seasonal_warnings"?: [{ "month":"YYYY-MM", "note": string }],
-      "analytics"?: { "avgUSD": number, "varianceUSD": number, "cheapestMonth": string, "mostExpensiveMonth": string },
+      "highlights"?: (string | { "title": string, "detail"?: string })[],
+      "analytics"?: { "avgUSD"?: number, "varianceUSD"?: number, "cheapestMonth"?: string, "mostExpensiveMonth"?: string },
       "map_center"?: { "lat": number, "lon": number }
     }
   ] // exactly 5
@@ -151,9 +185,10 @@ Output **ONLY JSON** matching this schema (no extra text, no Markdown):
 `.trim();
 }
 
-// ---------- route ----------
+// ----------------- route -----------------
 export async function POST(req: NextRequest) {
-  const reqId = Math.random().toString(36).slice(2, 8); // tiny correlation id for logs
+  const reqId = Math.random().toString(36).slice(2, 8); // small correlation id for logs
+
   try {
     if (!process.env.OPENAI_API_KEY) {
       throw new Error("Missing OPENAI_API_KEY");
@@ -171,9 +206,10 @@ export async function POST(req: NextRequest) {
       return new NextResponse("Invalid request body", { status: 400 });
     }
 
+    // Build prompt
     const prompt = buildPrompt(body);
     console.log(
-      `[plan ${reqId}] Model: ${MODEL} | Prompt length: ${prompt.length} chars\n` +
+      `[plan ${reqId}] Model: ${MODEL} | Prompt length: ${prompt.length}\n` +
       `[plan ${reqId}] Prompt head:\n${short(prompt)}`
     );
 
@@ -192,7 +228,7 @@ export async function POST(req: NextRequest) {
     console.log(`[plan ${reqId}] OpenAI raw head:\n${short(raw)}`);
     if (!raw) throw new Error("OpenAI returned empty content");
 
-    // Strict parse then fallback to partial
+    // Strict parse then partial fallback
     let json: unknown;
     try {
       json = JSON.parse(raw);
@@ -201,12 +237,8 @@ export async function POST(req: NextRequest) {
       json = partialJsonParse(raw);
     }
 
-    // Normalize slugs just in case
-    if (
-      typeof json === "object" &&
-      json !== null &&
-      Array.isArray((json as any).destinations)
-    ) {
+    // Normalize slugs
+    if (json && typeof json === "object" && Array.isArray((json as any).destinations)) {
       (json as any).destinations = (json as any).destinations.map((d: any) => ({
         ...d,
         slug: d?.slug ? slugify(String(d.slug)) : slugify(String(d?.name ?? "")),
@@ -219,11 +251,11 @@ export async function POST(req: NextRequest) {
       parsed = PlanSchema.parse(json);
     } catch (e: any) {
       console.error(`[plan ${reqId}] Zod output validation error:`, e?.errors || e);
-      console.error(`[plan ${reqId}] Raw model output:\n${short(JSON.stringify(json || {}), 1000)}`);
+      console.error(`[plan ${reqId}] Raw model output:\n${short(JSON.stringify(json || {}), 1200)}`);
       return new NextResponse("Model output did not match schema", { status: 400 });
     }
 
-    // Compute totals
+    // Compute totals for summary
     const familySizeFor = (name: string) => {
       const t = body.travelers.find(
         (x) => x.name.trim().toLowerCase() === name.trim().toLowerCase()
@@ -260,22 +292,20 @@ export async function POST(req: NextRequest) {
         .sort((a, b) => a.totalGroupUSD - b.totalGroupUSD),
     };
 
-    // Sanity log before DB
-    console.log(`[plan ${reqId}] Saving plan:`, {
+    // Log before DB
+    console.log(`[plan ${reqId}] Saving plan`, {
       timeframe: body.timeframe,
       travelersCount: body.travelers.length,
-      destinations: summary.destinations.map((d) => d.slug),
+      destSlugs: summary.destinations.map((d) => d.slug),
     });
 
-    // Save plan (JSONB casts) -> include full model output
+    // ----------------- Save plan (includes group_fit) -----------------
     const [plan] = await q<{ id: string }>(
-      `
-      INSERT INTO plans
-        (timeframe, travelers, suggestions, model, final_recommendation, summary, model_output)
-      VALUES
-        ($1::jsonb, $2::jsonb, $3, $4, $5, $6::jsonb, $7::jsonb)
-      RETURNING id
-    `,
+      `INSERT INTO plans
+         (timeframe, travelers, suggestions, model, final_recommendation, summary, group_fit, model_output)
+       VALUES
+         ($1::jsonb,$2::jsonb,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb)
+       RETURNING id`,
       [
         toJsonb(body.timeframe),
         toJsonb(body.travelers),
@@ -283,13 +313,13 @@ export async function POST(req: NextRequest) {
         MODEL,
         parsed.final_recommendation,
         toJsonb(summary),
-        toJsonb(json), // store full model output
+        toJsonb(parsed.group_fit ?? { summary: "Balanced for costs and convenience." }),
+        toJsonb(parsed), // store validated model output too
       ]
     );
 
-    // Save destinations (JSONB casts) -> include analysis column with full destination object
+    // ----------------- Save destinations w/ enrichments -----------------
     for (const d of parsed.destinations) {
-      // find matching totals in summary (computed above)
       const matched = summary.destinations.find((s) => s.slug === d.slug);
       const totals = {
         avgPerPerson: matched?.avgPerPersonUSD ?? null,
@@ -299,9 +329,11 @@ export async function POST(req: NextRequest) {
       await q(
         `
         INSERT INTO destinations
-          (plan_id, slug, name, narrative, months, per_traveler_fares, totals, analysis)
+          (plan_id, slug, name, narrative, months, per_traveler_fares, totals,
+           analysis, highlights, map_center, best_month, avoid_months)
         VALUES
-          ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb)
+          ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7::jsonb,
+           $8::jsonb,$9::jsonb,$10::jsonb,$11,$12::jsonb)
       `,
         [
           plan.id,
@@ -309,9 +341,16 @@ export async function POST(req: NextRequest) {
           d.name,
           d.narrative,
           toJsonb(d.months ?? []),
-          toJsonb(d.per_traveler_fares),
+          toJsonb(d.per_traveler_fares ?? []),
           toJsonb(totals),
-          toJsonb(d), // full destination object saved into analysis
+
+          // new enrichments (optional)
+          toJsonb(d.analysis ?? null),
+          toJsonb(d.highlights ?? null),
+          toJsonb(d.map_center ?? null),
+          // prefer explicit best_month; fall back to suggested_month if present
+          d.best_month ?? d.suggested_month ?? null,
+          toJsonb(d.avoid_months ?? null),
         ]
       );
     }
@@ -319,7 +358,6 @@ export async function POST(req: NextRequest) {
     console.log(`[plan ${reqId}] Done. planId=${plan.id}`);
     return NextResponse.json({ planId: plan.id });
   } catch (err: any) {
-    // Everything important shows in Vercel logs
     const payload = err?.response?.data ?? err;
     console.error("[/api/plan] Fatal:", payload);
     const msg =
