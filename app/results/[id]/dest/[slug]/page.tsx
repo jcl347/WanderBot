@@ -1,4 +1,3 @@
-// app/results/[id]/dest/[slug]/page.tsx
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import BackgroundMap from "@/components/BackgroundMap";
@@ -8,9 +7,9 @@ import DestDetailClient from "@/components/DestDetailClient";
 import { mockDestinationDetailBySlug } from "@/mocks/destinations";
 import { q } from "@/lib/db";
 
-type PageProps = { params: Promise<{ id: string; slug: string }> };
+type PageParams = Promise<{ id: string; slug: string }>;
 
-export default async function DestDetail({ params }: PageProps) {
+export default async function DestDetail({ params }: { params: PageParams }) {
   const { id, slug } = await params;
 
   const useMock =
@@ -22,28 +21,23 @@ export default async function DestDetail({ params }: PageProps) {
 
   if (useMock) {
     dest = mockDestinationDetailBySlug[slug];
-    if (!dest) return notFound();
   } else {
     const rows = await q<any>(
-      `select slug, name, narrative, months, per_traveler_fares, analysis
-         from destinations
-        where plan_id = $1 and slug = $2
-        limit 1`,
+      "select slug, name, narrative, months, per_traveler_fares, analysis, map_center, best_month, avoid_months from destinations where plan_id = $1 and slug = $2",
       [id, slug]
     );
     dest = rows?.[0];
-    if (!dest) return notFound();
-
-    // merge analysis convenience (map_center, suggested_month, etc.)
-    const a = dest.analysis || {};
-    dest = {
-      ...dest,
-      ...a,
-      // keep original fields
-      months: dest.months || a.months || [],
-      per_traveler_fares: dest.per_traveler_fares || a.per_traveler_fares || [],
-    };
   }
+
+  if (!dest) return notFound();
+
+  // Flatten some fields for the client component
+  const shaped = {
+    ...dest,
+    photos: dest.analysis?.photos ?? dest.highlights?.filter((h: any) => typeof h === "string") ?? undefined,
+    best_month: dest.best_month ?? dest.analysis?.best_month,
+    map_center: dest.map_center,
+  };
 
   return (
     <BackgroundMap>
@@ -54,18 +48,7 @@ export default async function DestDetail({ params }: PageProps) {
         </Link>
       </div>
 
-      {/* client component renders charts + leaflet */}
-      <DestDetailClient dest={dest} />
-
-      {/* cute footer card */}
-      <SectionCard tight>
-        <div className="flex items-center gap-3">
-          <span className="text-2xl">🤖🎒</span>
-          <p className="text-sm text-neutral-700">
-            Our vacationing robot approves this spot — and is already practicing a beach shuffle.
-          </p>
-        </div>
-      </SectionCard>
+      <DestDetailClient dest={shaped} />
     </BackgroundMap>
   );
 }

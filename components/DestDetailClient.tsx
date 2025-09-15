@@ -4,41 +4,41 @@ import React from "react";
 import SectionCard from "./SectionCard";
 import MonthLine from "./MonthLine";
 import MapLeaflet from "./MapLeaflet";
+import PhotoCollage from "./PhotoCollage";
 
-type Fare = {
-  travelerName: string;
-  from: string;
-  avgUSD: number;
-  monthBreakdown?: { month: string; avgUSD: number }[];
-};
+export default function DestDetailClient({ dest }: { dest: any }) {
+  const fares = dest.per_traveler_fares ?? [];
 
-type Dest = {
-  name: string;
-  narrative: string;
-  months?: { month: string; note: string }[];
-  per_traveler_fares?: Fare[];
-  map_center?: { lat: number | string; lon: number | string };
-};
+  // Build month series; synthesize if missing
+  let monthSet = new Set<string>();
+  fares.forEach((f: any) => f.monthBreakdown?.forEach((m: any) => monthSet.add(m.month)));
+  let months = Array.from(monthSet).sort();
 
-export default function DestDetailClient({ dest }: { dest: Dest }) {
-  const fares = (dest.per_traveler_fares ?? []) as Fare[];
+  if (months.length === 0) {
+    const base = (dest.best_month || dest.suggested_month || "2026-01").slice(0, 7);
+    const [y, m] = base.split("-").map((x: string) => Number(x));
+    const trio = [new Date(y, m - 2, 1), new Date(y, m - 1, 1), new Date(y, m, 1)];
+    months = trio.map((d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
 
-  // Build month series for line chart
-  const monthSet = new Set<string>();
-  fares.forEach((f) => f.monthBreakdown?.forEach((m) => monthSet.add(m.month)));
-  const months = Array.from(monthSet).sort();
   const series = months.map((m) => {
     const row: Record<string, number | string | null> = { month: m };
-    fares.forEach((f) => {
-      row[f.travelerName] =
-        f.monthBreakdown?.find((x) => x.month === m)?.avgUSD ?? null;
+    fares.forEach((f: any) => {
+      const found = f.monthBreakdown?.find((x: any) => x.month === m)?.avgUSD;
+      row[f.travelerName] = typeof found === "number" ? found : f.avgUSD ?? null;
     });
     return row;
   });
 
-  // Map center with safe number casting
-  const c = dest.map_center ?? { lat: 40, lon: -20 };
-  const center: [number, number] = [Number(c.lat), Number(c.lon)];
+  const analysis = dest.analysis ?? {};
+  const center = analysis.map_center ?? dest.map_center ?? { lat: 40, lon: -20 };
+  const markers = (analysis.map_markers ?? []).map((p: any) => ({
+    position: [p.position?.[0] ?? 0, p.position?.[1] ?? 0] as [number, number],
+    label: p.name,
+  }));
+
+  const photos = analysis.photos ?? dest.photos;
+  const photo_attribution = analysis.photo_attribution ?? dest.photo_attribution;
 
   return (
     <>
@@ -48,10 +48,18 @@ export default function DestDetailClient({ dest }: { dest: Dest }) {
       </SectionCard>
 
       <SectionCard tight>
+        <h2 className="text-lg font-semibold mb-3">Vibe check (photos)</h2>
+        <PhotoCollage slug={dest.slug} photos={photos} />
+        {photo_attribution && (
+          <p className="mt-2 text-xs text-neutral-500">{photo_attribution}</p>
+        )}
+      </SectionCard>
+
+      <SectionCard tight>
         <h2 className="text-lg font-semibold mb-3">Monthly notes</h2>
         {dest.months?.length ? (
           <ul className="list-disc pl-6 text-sm">
-            {dest.months.map((m) => (
+            {dest.months.map((m: any) => (
               <li key={m.month}>
                 <span className="font-medium">{m.month}:</span> {m.note}
               </li>
@@ -64,29 +72,19 @@ export default function DestDetailClient({ dest }: { dest: Dest }) {
 
       <SectionCard>
         <h2 className="text-lg font-semibold mb-3">Monthly fare trend</h2>
-        {series.length ? (
-          <>
-            <MonthLine data={series} />
-            <p className="text-xs text-neutral-500 mt-2">
-              Mock averages per traveler (round-trip, USD).
-            </p>
-          </>
-        ) : (
-          <div className="text-sm text-neutral-500">No month breakdown provided.</div>
-        )}
+        <MonthLine data={series} />
+        <p className="text-xs text-neutral-500 mt-2">
+          Estimated averages per traveler (round-trip, USD). Missing months are inferred.
+        </p>
       </SectionCard>
 
       <SectionCard>
         <h2 className="text-lg font-semibold mb-3">Map</h2>
         <div className="h-64">
           <MapLeaflet
-            center={center}
-            markers={[
-              {
-                position: center,
-                label: dest.name,
-              },
-            ]}
+            center={[center.lat, center.lon]}
+            zoom={markers.length ? 10 : 3}
+            markers={markers}
           />
         </div>
       </SectionCard>
@@ -103,7 +101,7 @@ export default function DestDetailClient({ dest }: { dest: Dest }) {
               </tr>
             </thead>
             <tbody>
-              {fares.map((f, i) => (
+              {fares.map((f: any, i: number) => (
                 <tr key={i} className="border-t">
                   <td className="p-2">{f.travelerName}</td>
                   <td className="p-2">{f.from}</td>
