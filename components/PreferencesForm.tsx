@@ -24,13 +24,19 @@ type Profile = {
   suggestions?: string;
 };
 
+// in components/PreferencesForm.tsx
 function uid() {
+  // prefer Web Crypto when available (browser)
   try {
-    // @ts-ignore
-    return crypto?.randomUUID?.() ?? "t_" + Math.random().toString(36).slice(2, 10);
+    if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+      // Narrow the type so TS is happy without ts-ignore
+      return (crypto as Crypto & { randomUUID: () => string }).randomUUID();
+    }
   } catch {
-    return "t_" + Math.random().toString(36).slice(2, 10);
+    // ignore and fall back
   }
+  // SSR / old environments fallback
+  return "t_" + Math.random().toString(36).slice(2, 10);
 }
 
 export default function PreferencesForm() {
