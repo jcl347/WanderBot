@@ -56,12 +56,10 @@ const DestSchema = z.object({
   name: z.string(),
   slug: z.string(),
   narrative: z.string(),
-  months: z
-    .array(z.object({ month: z.string(), note: z.string() }))
-    .optional(),
+  months: z.array(z.object({ month: z.string(), note: z.string() })).optional(),
   per_traveler_fares: z.array(DestFare),
 
-  // optional enrichments (kept inside analysis for now)
+  // optional enrichments
   suggested_month: z.string().optional(),
   seasonal_warnings: z
     .array(z.object({ month: z.string(), note: z.string() }))
@@ -87,6 +85,10 @@ const DestSchema = z.object({
       })
     )
     .optional(),
+
+  // NEW: photo collage support (shown on the detail page)
+  photos: z.array(z.string().url()).optional(),
+  photo_attribution: z.string().optional(),
 });
 
 const PlanSchema = z.object({
@@ -122,18 +124,23 @@ function buildPrompt(input: z.infer<typeof Body>) {
     )
     .join("\n");
 
-  // Mini example shows the exact shape we expect
+  // Example now includes photos + attribution (Wikimedia only)
   const example = `
 EXAMPLE DESTINATION (shape only, values illustrative):
 {
   "name": "Los Angeles",
   "slug": "los-angeles",
-  "narrative": "Why it's good for this group…",
+  "narrative": "Why it's good for this group… Include 2–3 bullet micro-itinerary inside the prose.",
   "months": [
     { "month": "${timeframe.startMonth}", "note": "Mild weather; shoulder season" }
   ],
   "per_traveler_fares": [
-    { "travelerName": "${travelers[0].name}", "from": "${travelers[0].homeLocation}", "avgUSD": 350 }
+    { "travelerName": "${travelers[0].name}", "from": "${travelers[0].homeLocation}", "avgUSD": 350,
+      "monthBreakdown": [
+        { "month": "${timeframe.startMonth}", "avgUSD": 340 },
+        { "month": "${timeframe.endMonth}", "avgUSD": 410 }
+      ]
+    }
   ],
   "suggested_month": "${timeframe.startMonth}",
   "seasonal_warnings": [{ "month": "${timeframe.endMonth}", "note": "Peak heat / crowds" }],
@@ -142,7 +149,14 @@ EXAMPLE DESTINATION (shape only, values illustrative):
   "map_center": { "lat": 34.0522, "lon": -118.2437 },
   "map_markers": [
     { "name": "Santa Monica Pier", "position": [34.0101, -118.4965], "blurb": "Iconic pier" }
-  ]
+  ],
+  "photos": [
+    "https://upload.wikimedia.org/…/photo1.jpg",
+    "https://upload.wikimedia.org/…/photo2.jpg",
+    "https://upload.wikimedia.org/…/photo3.jpg",
+    "https://upload.wikimedia.org/…/photo4.jpg"
+  ],
+  "photo_attribution": "Photos via Wikimedia Commons contributors (CC BY-SA or public domain)."
 }
 `.trim();
 
@@ -160,10 +174,11 @@ Rules:
 - Otherwise, **minimize total group flight cost** while balancing interests (families, kids, mobility, vibes).
 - For each destination:
   • "name" (string) and "slug" (kebab-case)
-  • "narrative": WHY it fits the group (+ a tiny 2–3 bullet micro-itinerary inside the prose)
-  • "per_traveler_fares": ARRAY of { travelerName, from, avgUSD, monthBreakdown? }
-    - Do NOT return an object map; it MUST be an array.
+  • "narrative": WHY it fits the group (**include a tiny 2–3 bullet micro-itinerary inside the prose**)
+  • "per_traveler_fares": ARRAY of { travelerName, from, avgUSD, monthBreakdown? } (monthBreakdown is an ARRAY, not a map)
   • "months": ARRAY of { month: "YYYY-MM", note: string }
+  • "photos": ARRAY of **exactly 4** hotlink-safe **Wikimedia Commons** URLs that visually represent the destination (landmarks/landscapes). No stock sites other than Wikimedia. No portraits of identifiable people.
+  • "photo_attribution": Short string crediting "Wikimedia Commons contributors" and license (e.g., "CC BY-SA" or "public domain").
   • OPTIONAL enrichments: "satisfies", "suggested_month", "seasonal_warnings", "analytics", "map_center", "map_markers"
 - Provide "final_recommendation": one strong pick & why (cost + fit + tradeoffs).
 - Provide optional "group_fit": { summary, priorities[], tradeoffs[] }.
@@ -179,6 +194,7 @@ Return JSON like:
 
 // ------------ normalizers for sloppy model output ------------
 type Travelers = z.infer<typeof Body>["travelers"];
+
 function normalizePerTravelerFares(
   ptf: unknown,
   travelers: Travelers
@@ -207,12 +223,10 @@ function normalizePerTravelerFares(
                 ? (t.monthBreakdown as unknown[])
                     .map((m: unknown) => {
                       const mm = m as any;
-                      return (
-                        mm &&
+                      return mm &&
                         typeof mm === "object" &&
                         typeof mm.month === "string" &&
                         Number.isFinite(Number(mm.avgUSD))
-                      )
                         ? { month: mm.month, avgUSD: Number(mm.avgUSD) }
                         : null;
                     })
@@ -226,14 +240,14 @@ function normalizePerTravelerFares(
       .filter(Boolean) as Array<z.infer<typeof DestFare>>;
   }
 
-  // Object map form: { "Jordan": 150, "Alice": 150 } OR nested objects
+  // Object map form
   if (ptf && typeof ptf === "object") {
     const out: Array<z.infer<typeof DestFare>> = [];
     for (const [key, val] of Object.entries(ptf as Record<string, any>)) {
       const avg =
         typeof val === "number"
           ? val
-          : Number(val?.avgUSD ?? val?.price ?? val); // best-effort extraction
+          : Number(val?.avgUSD ?? val?.price ?? val);
       if (!Number.isFinite(avg)) continue;
       const match = travelers.find(
         (t) => t.name.trim().toLowerCase() === key.trim().toLowerCase()
@@ -246,12 +260,10 @@ function normalizePerTravelerFares(
           ? ((val as any).monthBreakdown as unknown[])
               .map((m: unknown) => {
                 const mm = m as any;
-                return (
-                  mm &&
+                return mm &&
                   typeof mm === "object" &&
                   typeof mm.month === "string" &&
                   Number.isFinite(Number(mm.avgUSD))
-                )
                   ? { month: mm.month, avgUSD: Number(mm.avgUSD) }
                   : null;
               })
@@ -273,10 +285,14 @@ function normalizeMonths(
     const arr = (months as unknown[])
       .map((m: unknown) => {
         const x = m as any;
-        if (x && typeof x === "object" && typeof x.month === "string" && typeof x.note === "string") {
+        if (
+          x &&
+          typeof x === "object" &&
+          typeof x.month === "string" &&
+          typeof x.note === "string"
+        ) {
           return { month: x.month, note: x.note };
         }
-        // If an array of strings slipped through
         if (typeof m === "string") return { month: fallbackMonth, note: m };
         return null;
       })
@@ -305,14 +321,16 @@ function fallbackFinalRecommendation(destinations: any[]): string {
   if (!Array.isArray(destinations) || destinations.length === 0) {
     return "We compared five options and chose the best overall fit for your group.";
   }
-  // pick the destination with the lowest average fare if possible
   let best = destinations[0];
   let bestAvg = Infinity;
   for (const d of destinations) {
-    const fares = Array.isArray(d.per_traveler_fares) ? d.per_traveler_fares : [];
+    const fares = Array.isArray(d.per_traveler_fares)
+      ? d.per_traveler_fares
+      : [];
     const avg =
       fares.length > 0
-        ? fares.reduce((a: number, f: any) => a + Number(f?.avgUSD || 0), 0) / fares.length
+        ? fares.reduce((a: number, f: any) => a + Number(f?.avgUSD || 0), 0) /
+          fares.length
         : Infinity;
     if (avg < bestAvg) {
       bestAvg = avg;
@@ -345,7 +363,7 @@ export async function POST(req: NextRequest) {
     const prompt = buildPrompt(body);
     console.log(
       `[plan ${reqId}] Model: ${MODEL} | Prompt length: ${prompt.length}\n` +
-      `[plan ${reqId}] Prompt head:\n${short(prompt)}`
+        `[plan ${reqId}] Prompt head:\n${short(prompt)}`
     );
 
     // ask OpenAI (JSON enforced)
@@ -353,7 +371,11 @@ export async function POST(req: NextRequest) {
       model: MODEL,
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: "You produce strict JSON that matches the spec exactly. Arrays must be arrays (not objects)." },
+        {
+          role: "system",
+          content:
+            "You produce strict JSON that matches the spec exactly. Arrays must be arrays (not objects).",
+        },
         { role: "user", content: prompt },
       ],
       temperature: 0.3,
@@ -372,23 +394,18 @@ export async function POST(req: NextRequest) {
       json = partialJsonParse(raw);
     }
 
-    // -------- normalize typical issues BEFORE validation --------
+    // -------- normalize BEFORE validation --------
     if (!json || typeof json !== "object") {
       throw new Error("Model returned non-object JSON");
     }
-
     if (!Array.isArray(json.destinations)) {
-      // try to lift from 'options' or similar
       if (Array.isArray(json.options)) json.destinations = json.options;
       else throw new Error("Model did not return 'destinations' array");
     }
 
-    // coerce exactly 5 items (truncate/expend if needed)
+    // coerce exactly 5 items
     if (json.destinations.length > 5) json.destinations = json.destinations.slice(0, 5);
-    if (json.destinations.length < 5) {
-      // pad with minimal stubs if the model shorted us (better than failing)
-      while (json.destinations.length < 5) json.destinations.push({});
-    }
+    while (json.destinations.length < 5) json.destinations.push({});
 
     json.destinations = json.destinations.map((d: any, i: number) => {
       const base = d && typeof d === "object" ? d : {};
@@ -397,12 +414,15 @@ export async function POST(req: NextRequest) {
       const { name, slug } = ensureNameSlug(base, i);
 
       // normalize per_traveler_fares
-      const fares = normalizePerTravelerFares(base.per_traveler_fares, body.travelers);
+      const fares = normalizePerTravelerFares(
+        base.per_traveler_fares,
+        body.travelers
+      );
 
       // normalize months
       const months = normalizeMonths(base.months, body.timeframe.startMonth);
 
-      // pass-through enrichments if present
+      // pass-through enrichments + photos
       const analysis = {
         suggested_month: base.suggested_month,
         seasonal_warnings: base.seasonal_warnings,
@@ -410,7 +430,10 @@ export async function POST(req: NextRequest) {
         analytics: base.analytics,
         map_center: base.map_center,
         map_markers: base.map_markers,
-        micro_itinerary: base.micro_itinerary, // if model produced this in narrative aside
+        micro_itinerary: base.micro_itinerary,
+        photos: Array.isArray(base.photos) ? base.photos.slice(0, 4) : undefined,
+        photo_attribution:
+          typeof base.photo_attribution === "string" ? base.photo_attribution : undefined,
       };
 
       // narrative fallback
@@ -425,6 +448,7 @@ export async function POST(req: NextRequest) {
         narrative,
         months,
         per_traveler_fares: fares,
+
         // keep enrichments on the destination; we'll also store them in analysis column
         suggested_month: analysis.suggested_month,
         seasonal_warnings: analysis.seasonal_warnings,
@@ -432,6 +456,13 @@ export async function POST(req: NextRequest) {
         analytics: analysis.analytics,
         map_center: analysis.map_center,
         map_markers: analysis.map_markers,
+
+        // NEW top-level (optional) fields — also duplicated into analysis for UI
+        photos: analysis.photos,
+        photo_attribution: analysis.photo_attribution,
+
+        // everything is also available in analysis jsonb
+        analysis,
       };
     });
 
@@ -439,21 +470,21 @@ export async function POST(req: NextRequest) {
       json.final_recommendation = fallbackFinalRecommendation(json.destinations);
     }
 
-    // default group_fit
     if (!json.group_fit || typeof json.group_fit !== "object") {
       json.group_fit = {
-        summary:
-          "Balanced for cost, convenience, and interests across the group.",
+        summary: "Balanced for cost, convenience, and interests across the group.",
       };
     }
 
-    // -------- now validate against strict schema --------
+    // -------- validate against strict schema --------
     let parsed: z.infer<typeof PlanSchema>;
     try {
       parsed = PlanSchema.parse(json);
     } catch (e: any) {
       console.error(`[plan ${reqId}] Zod output validation error:`, e?.errors || e);
-      console.error(`[plan ${reqId}] Raw model output:\n${short(JSON.stringify(json || {}), 2000)}`);
+      console.error(
+        `[plan ${reqId}] Raw model output:\n${short(JSON.stringify(json || {}), 2000)}`
+      );
       return new NextResponse("Model output did not match schema", { status: 400 });
     }
 
@@ -500,7 +531,7 @@ export async function POST(req: NextRequest) {
       destSlugs: summary.destinations.map((d) => d.slug),
     });
 
-    // ---- save plan (includes full model_output for auditing/richer UI) ----
+    // ---- save plan ----
     const [plan] = await q<{ id: string }>(
       `
       INSERT INTO plans
@@ -516,7 +547,7 @@ export async function POST(req: NextRequest) {
         MODEL,
         parsed.final_recommendation,
         toJsonb(summary),
-        toJsonb(json),           // raw normalized model output
+        toJsonb(json), // normalized model output
         toJsonb(parsed.group_fit ?? null),
       ]
     );
@@ -529,7 +560,6 @@ export async function POST(req: NextRequest) {
         totalGroup: matched?.totalGroupUSD ?? null,
       };
 
-      // store the fully normalized destination as `analysis` for rich UI
       await q(
         `
         INSERT INTO destinations
@@ -545,7 +575,7 @@ export async function POST(req: NextRequest) {
           toJsonb(d.months ?? []),
           toJsonb(d.per_traveler_fares),
           toJsonb(totals),
-          toJsonb(d), // includes map_center/map_markers/satisfies/etc
+          toJsonb(d), // includes photos & photo_attribution
         ]
       );
     }
@@ -553,12 +583,9 @@ export async function POST(req: NextRequest) {
     console.log(`[plan ${reqId}] Done. planId=${plan.id}`);
     return NextResponse.json({ planId: plan.id });
   } catch (err: any) {
-    // visible in Vercel logs
     console.error("[/api/plan] Fatal:", err?.response?.data ?? err?.message ?? err);
     const msg =
-      err?.response?.data?.error?.message ||
-      err?.message ||
-      "Unknown error";
+      err?.response?.data?.error?.message || err?.message || "Unknown error";
     return new NextResponse(msg, { status: 400 });
   }
 }

@@ -6,12 +6,27 @@ import SectionCard from "@/components/SectionCard";
 import RobotBadge from "@/components/RobotBadge";
 import CostComparisons from "@/components/CostComparisons";
 import MapLeaflet from "@/components/MapLeaflet";
+import DestinationCard from "@/components/DestinationCard";
 import { mockPlan, mockDestinations } from "@/mocks/plan";
 import { q } from "@/lib/db";
 
 type PageProps = { params: Promise<{ id: string }> };
 
-// Fallback lat/lon if a dest has no map_center in analysis
+type ListDest = {
+  slug: string;
+  name: string;
+  narrative: string;
+  analysis?: any;
+  map_center?: { lat: number; lon: number } | null;
+  per_traveler_fares?: Array<{
+    travelerName: string;
+    from: string;
+    avgUSD: number;
+    monthBreakdown?: { month: string; avgUSD: number }[];
+  }>;
+};
+
+// Fallback lat/lon for demo slugs if model/DB didn’t provide map_center
 const FALLBACK_CENTERS: Record<string, { lat: number; lon: number }> = {
   lisbon: { lat: 38.7223, lon: -9.1393 },
   "mexico-city": { lat: 19.4326, lon: -99.1332 },
@@ -20,22 +35,14 @@ const FALLBACK_CENTERS: Record<string, { lat: number; lon: number }> = {
   honolulu: { lat: 21.3069, lon: -157.8583 },
 };
 
-// Soft, brand-aligned variants (very light gradients + matching borders)
-// The card style will rotate through these based on slug hash.
-const CARD_VARIANTS = [
-  { grad: "from-sky-50 to-white", border: "border-sky-200", title: "text-sky-900" },
-  { grad: "from-emerald-50 to-white", border: "border-emerald-200", title: "text-emerald-900" },
-  { grad: "from-indigo-50 to-white", border: "border-indigo-200", title: "text-indigo-900" },
-  { grad: "from-amber-50 to-white", border: "border-amber-200", title: "text-amber-900" },
-  { grad: "from-rose-50 to-white", border: "border-rose-200", title: "text-rose-900" },
+// Soft brand palette variants (sky/emerald/indigo/amber/rose)
+const CARD_TINTS = [
+  { bg: "bg-sky-50/70", ring: "ring-sky-200" },
+  { bg: "bg-emerald-50/70", ring: "ring-emerald-200" },
+  { bg: "bg-indigo-50/70", ring: "ring-indigo-200" },
+  { bg: "bg-amber-50/70", ring: "ring-amber-200" },
+  { bg: "bg-rose-50/70", ring: "ring-rose-200" },
 ];
-
-// Simple deterministic hash so the same slug always gets the same soft color
-function slugIndex(slug: string, mod = CARD_VARIANTS.length) {
-  let h = 0;
-  for (let i = 0; i < slug.length; i++) h = (h * 31 + slug.charCodeAt(i)) >>> 0;
-  return h % mod;
-}
 
 export default async function ResultsPage({ params }: PageProps) {
   const { id } = await params;
@@ -46,17 +53,10 @@ export default async function ResultsPage({ params }: PageProps) {
     process.env.MOCK === "1";
 
   let plan: any;
-  let dests: Array<{
-    slug: string;
-    name: string;
-    narrative: string;
-    months?: any[];
-    per_traveler_fares?: any[];
-    analysis?: any;
-    map_center?: { lat: number; lon: number } | null;
-  }> = [];
+  let dests: ListDest[] = [];
 
   if (useMock) {
+    // Mock plan + destinations for demo path
     plan = {
       id: "demo",
       final_recommendation: mockPlan.final_recommendation,
@@ -66,33 +66,31 @@ export default async function ResultsPage({ params }: PageProps) {
       slug: d.slug,
       name: d.name,
       narrative: d.narrative,
-      months: d.months,
+      analysis: d.analysis ?? {},
+      map_center: FALLBACK_CENTERS[d.slug as keyof typeof FALLBACK_CENTERS] ?? null,
       per_traveler_fares: d.per_traveler_fares,
-      analysis: d.analysis,
-      map_center: FALLBACK_CENTERS[d.slug as keyof typeof FALLBACK_CENTERS],
     }));
   } else {
     const rows = await q<any>("select * from plans where id = $1", [id]);
     plan = rows?.[0];
     if (!plan) return notFound();
 
-    // Pull the extra fields the detail page expects
-    dests = await q<any>(
-      `select slug, name, narrative, months, per_traveler_fares, analysis
+    // Pull minimal fields for list; photos/months etc. are loaded on detail page
+    const rawDests = await q<any>(
+      `select slug, name, narrative, analysis, per_traveler_fares
        from destinations
        where plan_id = $1
        order by name asc`,
       [id]
     );
 
-    dests = dests.map((d: any) => ({
+    dests = rawDests.map((d: any) => ({
       slug: d.slug,
       name: d.name,
       narrative: d.narrative,
-      months: d.months,
-      per_traveler_fares: d.per_traveler_fares,
-      analysis: d.analysis,
+      analysis: d.analysis ?? {},
       map_center: d.analysis?.map_center ?? null,
+      per_traveler_fares: d.per_traveler_fares ?? [],
     }));
   }
 
@@ -105,21 +103,18 @@ export default async function ResultsPage({ params }: PageProps) {
     }[];
   };
 
-  // Build markers for the overview map
+  // Build markers for map
   const markers = dests
     .map((d) => {
       const mc =
         d.map_center ??
         FALLBACK_CENTERS[d.slug as keyof typeof FALLBACK_CENTERS];
       if (!mc) return null;
-      return {
-        position: [mc.lat, mc.lon] as [number, number],
-        label: d.name,
-      };
+      return { position: [mc.lat, mc.lon] as [number, number], label: d.name };
     })
     .filter(Boolean) as { position: [number, number]; label: string }[];
 
-  // Pick a reasonable center
+  // Choose a reasonable center: first marker or Atlantic view
   const center: [number, number] =
     markers.length > 0 ? markers[0]!.position : [30, -30];
 
@@ -134,18 +129,34 @@ export default async function ResultsPage({ params }: PageProps) {
 
       <SectionCard>
         <h1 className="text-2xl font-semibold">Your trip plan</h1>
-        <p className="mt-2 whitespace-pre-line text-neutral-700">
+        <p className="mt-2 text-neutral-700 whitespace-pre-line">
           {plan.final_recommendation}
         </p>
       </SectionCard>
 
       <SectionCard>
-        <h2 className="mb-4 text-lg font-semibold">Cost comparison</h2>
+        <h2 className="text-lg font-semibold mb-4">Cost comparison</h2>
         <CostComparisons data={summary.destinations} />
+        {/* Soft brand-tinted legend chips */}
+        <div className="mt-4 flex flex-wrap gap-2">
+          {summary.destinations.map((d, i) => {
+            const tint = CARD_TINTS[i % CARD_TINTS.length];
+            return (
+              <span
+                key={d.slug}
+                className={`inline-flex items-center gap-2 rounded-full ${tint.bg} ring-1 ${tint.ring} px-3 py-1 text-xs`}
+                title={`${d.name}: group $${d.totalGroupUSD.toLocaleString()}, per person $${d.avgPerPersonUSD.toLocaleString()}`}
+              >
+                <span className="h-2 w-2 rounded-full bg-black/70" />
+                {d.name}
+              </span>
+            );
+          })}
+        </div>
       </SectionCard>
 
       <SectionCard>
-        <h2 className="mb-3 text-lg font-semibold">Trip map</h2>
+        <h2 className="text-lg font-semibold mb-3">Trip map</h2>
         <div className="h-72 w-full">
           <MapLeaflet center={center} zoom={2} markers={markers} />
         </div>
@@ -155,49 +166,20 @@ export default async function ResultsPage({ params }: PageProps) {
       </SectionCard>
 
       <SectionCard>
-        <h2 className="mb-3 text-lg font-semibold">Destinations</h2>
-
-        <div className="grid gap-3 md:grid-cols-2">
-          {dests.map((d) => {
-            const idx = slugIndex(d.slug);
-            const v = CARD_VARIANTS[idx];
-
+        <h2 className="text-lg font-semibold mb-3">Destinations</h2>
+        <div className="grid md:grid-cols-2 gap-3">
+          {dests.map((d, idx) => {
+            const tint = CARD_TINTS[idx % CARD_TINTS.length];
             return (
-              <Link
+              <div
                 key={d.slug}
-                href={`/results/${useMock ? "demo" : id}/dest/${d.slug}`}
-                className={[
-                  "rounded-2xl border p-4 shadow-sm transition hover:shadow-md",
-                  "bg-gradient-to-br",
-                  v.grad,
-                  v.border,
-                ].join(" ")}
+                className={`rounded-2xl ${tint.bg} ring-1 ${tint.ring} p-0.5`}
               >
-                <div className={`font-semibold ${v.title}`}>{d.name}</div>
-                <div className="mt-1 line-clamp-3 text-sm text-neutral-700">
-                  {d.narrative}
-                </div>
-
-                {/* Small hint row */}
-                <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                  {Array.isArray(d.months) && d.months.length > 0 && (
-                    <span className="rounded-full bg-white/60 px-2 py-0.5 text-neutral-700 border">
-                      📅 {d.months[0].month}
-                    </span>
-                  )}
-                  {Array.isArray(d.per_traveler_fares) &&
-                    d.per_traveler_fares.length > 0 && (
-                      <span className="rounded-full bg-white/60 px-2 py-0.5 text-neutral-700 border">
-                        💸 Avg ${Math.round(
-                          d.per_traveler_fares.reduce(
-                            (a: number, f: any) => a + (Number(f.avgUSD) || 0),
-                            0
-                          ) / d.per_traveler_fares.length
-                        ).toLocaleString()}
-                      </span>
-                    )}
-                </div>
-              </Link>
+                <DestinationCard
+                  dest={d}
+                  href={`/results/${useMock ? "demo" : id}/dest/${d.slug}`}
+                />
+              </div>
             );
           })}
         </div>
