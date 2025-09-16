@@ -16,7 +16,7 @@ type ListDest = {
   slug: string;
   name: string;
   narrative: string;
-  analysis?: any;
+  analysis: any; // normalized to an object in both mock & DB paths
   map_center?: { lat: number; lon: number } | null;
   per_traveler_fares?: Array<{
     travelerName: string;
@@ -24,6 +24,15 @@ type ListDest = {
     avgUSD: number;
     monthBreakdown?: { month: string; avgUSD: number }[];
   }>;
+};
+
+// Shape returned by DB query (use COALESCE to avoid nulls)
+type DbRow = {
+  slug: string;
+  name: string;
+  narrative: string;
+  analysis: any; // jsonb object
+  per_traveler_fares: ListDest["per_traveler_fares"];
 };
 
 // Fallback lat/lon for demo slugs if model/DB didn’t provide map_center
@@ -68,27 +77,34 @@ export default async function ResultsPage({ params }: PageProps) {
       narrative: d.narrative,
       analysis: d.analysis ?? {},
       map_center: FALLBACK_CENTERS[d.slug as keyof typeof FALLBACK_CENTERS] ?? null,
-      per_traveler_fares: d.per_traveler_fares,
+      per_traveler_fares: d.per_traveler_fares ?? [],
     }));
   } else {
     const rows = await q<any>("select * from plans where id = $1", [id]);
     plan = rows?.[0];
     if (!plan) return notFound();
 
-    // Pull minimal fields for list; photos/months etc. are loaded on detail page
-    const rawDests = await q<any>(
-      `select slug, name, narrative, analysis, per_traveler_fares
-       from destinations
-       where plan_id = $1
-       order by name asc`,
+    // Ensure analysis is always an object for TS via COALESCE
+    const rawDests = await q<DbRow>(
+      `
+      select
+        slug,
+        name,
+        narrative,
+        coalesce(analysis, '{}'::jsonb) as analysis,
+        coalesce(per_traveler_fares, '[]'::jsonb) as per_traveler_fares
+      from destinations
+      where plan_id = $1
+      order by name asc
+      `,
       [id]
     );
 
-    dests = rawDests.map((d: any) => ({
+    dests = rawDests.map((d) => ({
       slug: d.slug,
       name: d.name,
       narrative: d.narrative,
-      analysis: d.analysis ?? {},
+      analysis: d.analysis, // guaranteed object
       map_center: d.analysis?.map_center ?? null,
       per_traveler_fares: d.per_traveler_fares ?? [],
     }));
