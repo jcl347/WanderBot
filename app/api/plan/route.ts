@@ -58,7 +58,7 @@ const DestSchema = z.object({
   months: z.array(z.object({ month: z.string(), note: z.string() })).optional(),
   per_traveler_fares: z.array(DestFare),
 
-  // optional enrichments
+  // optional enrichments we store in `analysis`
   suggested_month: z.string().optional(),
   seasonal_warnings: z
     .array(z.object({ month: z.string(), note: z.string() }))
@@ -74,6 +74,8 @@ const DestSchema = z.object({
       mostExpensiveMonth: z.string().optional(),
     })
     .optional(),
+
+  // coordinates from the model (we want these!)
   map_center: z.object({ lat: z.number(), lon: z.number() }).optional(),
   map_markers: z
     .array(
@@ -85,7 +87,7 @@ const DestSchema = z.object({
     )
     .optional(),
 
-  // NEW: photo collage support (shown on the detail page)
+  // detail-page photo collage
   photos: z.array(z.string().url()).optional(),
   photo_attribution: z.string().optional(),
 });
@@ -123,13 +125,13 @@ function buildPrompt(input: z.infer<typeof Body>) {
     )
     .join("\n");
 
-  // Example now includes photos + attribution (Wikimedia only)
+  // Example explicitly shows map_center + markers + photos
   const example = `
 EXAMPLE DESTINATION (shape only, values illustrative):
 {
   "name": "Los Angeles",
   "slug": "los-angeles",
-  "narrative": "Why it's good for this group… Include 2–3 bullet micro-itinerary inside the prose.",
+  "narrative": "Why it's good for this group… Include a tiny 2–3 bullet micro-itinerary inside the prose.",
   "months": [
     { "month": "${timeframe.startMonth}", "note": "Mild weather; shoulder season" }
   ],
@@ -142,12 +144,10 @@ EXAMPLE DESTINATION (shape only, values illustrative):
     }
   ],
   "suggested_month": "${timeframe.startMonth}",
-  "seasonal_warnings": [{ "month": "${timeframe.endMonth}", "note": "Peak heat / crowds" }],
-  "satisfies": [{ "travelerName": "${travelers[0].name}", "reason": "Beach + resorts" }],
-  "analytics": { "avgUSD": 400, "varianceUSD": 80, "cheapestMonth": "${timeframe.startMonth}", "mostExpensiveMonth": "${timeframe.endMonth}" },
   "map_center": { "lat": 34.0522, "lon": -118.2437 },
   "map_markers": [
-    { "name": "Santa Monica Pier", "position": [34.0101, -118.4965], "blurb": "Iconic pier" }
+    { "name": "Santa Monica Pier", "position": [34.0101, -118.4965], "blurb": "Iconic pier" },
+    { "name": "Griffith Observatory", "position": [34.1184, -118.3004] }
   ],
   "photos": [
     "https://upload.wikimedia.org/…/photo1.jpg",
@@ -160,7 +160,7 @@ EXAMPLE DESTINATION (shape only, values illustrative):
 `.trim();
 
   return `
-You're a travel analyst for indecisive group trips. Produce **exactly 5 destinations** with opinionated reasoning and airfare estimates. Output **strict JSON**.
+You're a travel analyst for indecisive group trips. Produce **exactly 5 destinations** with opinionated reasoning and airfare estimates. Output **strict JSON** only.
 
 TRAVELERS
 ${tableHeader}${rows}
@@ -171,14 +171,15 @@ USER IDEAS: ${suggestions?.trim() || "none"}
 Rules:
 - If ANY traveler includes the phrase "dislikes travel", **center the trip near their home** (${anchor}).
 - Otherwise, **minimize total group flight cost** while balancing interests (families, kids, mobility, vibes).
-- For each destination:
+- For each destination you MUST include:
   • "name" (string) and "slug" (kebab-case)
   • "narrative": WHY it fits the group (**include a tiny 2–3 bullet micro-itinerary inside the prose**)
-  • "per_traveler_fares": ARRAY of { travelerName, from, avgUSD, monthBreakdown? } (monthBreakdown is an ARRAY, not a map)
+  • "per_traveler_fares": ARRAY of { travelerName, from, avgUSD, monthBreakdown? } (monthBreakdown is an ARRAY)
   • "months": ARRAY of { month: "YYYY-MM", note: string }
-  • "photos": ARRAY of **exactly 4** hotlink-safe **Wikimedia Commons** URLs that visually represent the destination (landmarks/landscapes). No stock sites other than Wikimedia. No portraits of identifiable people.
-  • "photo_attribution": Short string crediting "Wikimedia Commons contributors" and license (e.g., "CC BY-SA" or "public domain").
-  • OPTIONAL enrichments: "satisfies", "suggested_month", "seasonal_warnings", "analytics", "map_center", "map_markers"
+  • **"map_center": { "lat": number, "lon": number }** — REQUIRED. Use the city center or common visitor hub.
+  • "map_markers": optional ARRAY of 2–6 key landmarks with coordinates.
+  • "photos": ARRAY of **exactly 4** Wikimedia Commons URLs (landscapes/landmarks only).
+  • "photo_attribution": Short credit line (e.g., "Wikimedia Commons contributors — CC BY-SA").
 - Provide "final_recommendation": one strong pick & why (cost + fit + tradeoffs).
 - Provide optional "group_fit": { summary, priorities[], tradeoffs[] }.
 
@@ -198,7 +199,6 @@ function normalizePerTravelerFares(
   ptf: unknown,
   travelers: Travelers
 ): Array<z.infer<typeof DestFare>> {
-  // Already valid array?
   if (Array.isArray(ptf)) {
     return ptf
       .map((x: unknown) => {
@@ -409,25 +409,19 @@ export async function POST(req: NextRequest) {
     json.destinations = json.destinations.map((d: any, i: number) => {
       const base = d && typeof d === "object" ? d : {};
 
-      // fix name/slug
       const { name, slug } = ensureNameSlug(base, i);
-
-      // normalize per_traveler_fares
       const fares = normalizePerTravelerFares(
         base.per_traveler_fares,
         body.travelers
       );
-
-      // normalize months
       const months = normalizeMonths(base.months, body.timeframe.startMonth);
 
-      // pass-through enrichments + photos
       const analysis = {
         suggested_month: base.suggested_month,
         seasonal_warnings: base.seasonal_warnings,
         satisfies: base.satisfies,
         analytics: base.analytics,
-        map_center: base.map_center,
+        map_center: base.map_center, // <-- what we need for pins
         map_markers: base.map_markers,
         micro_itinerary: base.micro_itinerary,
         photos: Array.isArray(base.photos) ? base.photos.slice(0, 4) : undefined,
@@ -435,7 +429,6 @@ export async function POST(req: NextRequest) {
           typeof base.photo_attribution === "string" ? base.photo_attribution : undefined,
       };
 
-      // narrative fallback
       const narrative =
         typeof base.narrative === "string" && base.narrative.trim()
           ? base.narrative.trim()
@@ -448,7 +441,7 @@ export async function POST(req: NextRequest) {
         months,
         per_traveler_fares: fares,
 
-        // keep enrichments on the destination; we'll also store them in analysis column
+        // keep enrichments on the destination; also stored in analysis column
         suggested_month: analysis.suggested_month,
         seasonal_warnings: analysis.seasonal_warnings,
         satisfies: analysis.satisfies,
@@ -456,11 +449,9 @@ export async function POST(req: NextRequest) {
         map_center: analysis.map_center,
         map_markers: analysis.map_markers,
 
-        // NEW top-level (optional) fields — also duplicated into analysis for UI
         photos: analysis.photos,
         photo_attribution: analysis.photo_attribution,
 
-        // everything is also available in analysis jsonb
         analysis,
       };
     });
@@ -468,7 +459,6 @@ export async function POST(req: NextRequest) {
     if (!json.final_recommendation || typeof json.final_recommendation !== "string") {
       json.final_recommendation = fallbackFinalRecommendation(json.destinations);
     }
-
     if (!json.group_fit || typeof json.group_fit !== "object") {
       json.group_fit = {
         summary: "Balanced for cost, convenience, and interests across the group.",
@@ -486,6 +476,10 @@ export async function POST(req: NextRequest) {
       );
       return new NextResponse("Model output did not match schema", { status: 400 });
     }
+
+    // Log how many came back with coordinates (to verify on Vercel)
+    const withCoords = parsed.destinations.filter((d) => !!d.map_center).length;
+    console.log(`[plan ${reqId}] destinations with map_center: ${withCoords}/5`);
 
     // ---- compute summary ----
     const familySizeFor = (name: string) => {
@@ -574,7 +568,7 @@ export async function POST(req: NextRequest) {
           toJsonb(d.months ?? []),
           toJsonb(d.per_traveler_fares),
           toJsonb(totals),
-          toJsonb(d), // includes photos & photo_attribution
+          toJsonb(d), // includes photos, photo_attribution, map_center, map_markers
         ]
       );
     }
