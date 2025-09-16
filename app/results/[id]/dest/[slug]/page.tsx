@@ -6,10 +6,10 @@ import DestDetailClient from "@/components/DestDetailClient";
 import { q } from "@/lib/db";
 import { mockDestinationDetailBySlug } from "@/mocks/destinations";
 
-type PageProps = { params: { id: string; slug: string } };
+type PageProps = { params: Promise<{ id: string; slug: string }> };
 
 export default async function DestDetail({ params }: PageProps) {
-  const { id, slug } = params;
+  const { id, slug } = await params;
 
   const useMock =
     id === "demo" ||
@@ -35,6 +35,7 @@ export default async function DestDetail({ params }: PageProps) {
             ← Back to results
           </Link>
         </div>
+        {/* DestDetailClient reads photos, photo_attribution, map_center, map_markers from dest.analysis */}
         <DestDetailClient dest={dest} />
       </BackgroundMap>
     );

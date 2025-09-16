@@ -9,7 +9,7 @@ import DestinationCard from "@/components/DestinationCard";
 import { mockPlan, mockDestinations } from "@/mocks/plan";
 import { q } from "@/lib/db";
 
-type PageProps = { params: { id: string } };
+type PageProps = { params: Promise<{ id: string }> };
 
 type DestRow = {
   slug: string;
@@ -41,7 +41,7 @@ const FALLBACK_CENTERS: Record<string, { lat: number; lon: number }> = {
   montreal: { lat: 45.5017, lon: -73.5673 },
   "san-diego": { lat: 32.7157, lon: -117.1611 },
   honolulu: { lat: 21.3069, lon: -157.8583 },
-  // common US additions
+  // common US additions (so pins appear even without model coords)
   austin: { lat: 30.2672, lon: -97.7431 },
   "austin-texas": { lat: 30.2672, lon: -97.7431 },
   "las-vegas": { lat: 36.1699, lon: -115.1398 },
@@ -64,7 +64,7 @@ const CARD_COLORS = [
 ];
 
 export default async function ResultsPage({ params }: PageProps) {
-  const { id } = params;
+  const { id } = await params;
 
   const useMock =
     id === "demo" ||
@@ -85,7 +85,7 @@ export default async function ResultsPage({ params }: PageProps) {
       slug: d.slug,
       name: d.name,
       narrative: d.narrative,
-      analysis: d, // mock carries map_center, etc.
+      analysis: d, // mock carries map_center/photos/etc.
       months: (d as any).months ?? null,
       per_traveler_fares: (d as any).per_traveler_fares ?? null,
     }));
@@ -179,7 +179,7 @@ export default async function ResultsPage({ params }: PageProps) {
                     slug: d.slug,
                     name: d.name,
                     narrative: d.narrative,
-                    analysis: d.analysis ?? undefined,
+                    analysis: d.analysis ?? undefined, // highlights/best_month/photos live here
                   }}
                   href={`/results/${useMock ? "demo" : id}/dest/${d.slug}`}
                 />
