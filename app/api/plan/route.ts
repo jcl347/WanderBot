@@ -1,3 +1,4 @@
+// app/api/plan/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { q } from "@/lib/db";
@@ -58,7 +59,7 @@ const DestSchema = z.object({
   months: z.array(z.object({ month: z.string(), note: z.string() })).optional(),
   per_traveler_fares: z.array(DestFare),
 
-  // optional enrichments we store in `analysis`
+  // optional enrichments
   suggested_month: z.string().optional(),
   seasonal_warnings: z
     .array(z.object({ month: z.string(), note: z.string() }))
@@ -74,8 +75,6 @@ const DestSchema = z.object({
       mostExpensiveMonth: z.string().optional(),
     })
     .optional(),
-
-  // coordinates from the model (we want these!)
   map_center: z.object({ lat: z.number(), lon: z.number() }).optional(),
   map_markers: z
     .array(
@@ -87,7 +86,7 @@ const DestSchema = z.object({
     )
     .optional(),
 
-  // detail-page photo collage
+  // Photo collage support (detail page)
   photos: z.array(z.string().url()).optional(),
   photo_attribution: z.string().optional(),
 });
@@ -104,6 +103,34 @@ const PlanSchema = z.object({
   destinations: z.array(DestSchema).length(5),
 });
 
+// ------------ keyword mining for photos/POIs/events ------------
+function extractKeywords(input: z.infer<typeof Body>): string[] {
+  const bag: string[] = [];
+  input.travelers.forEach((t) => {
+    if (t.personality) bag.push(t.personality);
+    if (t.relationship) bag.push(t.relationship);
+    if (t.gender) bag.push(t.gender);
+    if (t.age) bag.push(t.age);
+  });
+  if (input.suggestions) bag.push(input.suggestions);
+
+  const txt = bag.join(" ").toLowerCase();
+
+  // quick pragmatic terms; the model gets this list to bias image choice/POIs
+  const seed = [
+    "beach","snorkel","surfing","hiking","national park","museums","art",
+    "nightlife","party","live music","food","tacos","bbq","wine","beer","coffee",
+    "kids","family","relax","resort","spa","outdoors","architecture","shopping",
+    "sports","baseball","football","zoo","aquarium","theme park","gardens",
+    "historic","old town","harbor","stadium","university","market","festival"
+  ];
+
+  const keep = seed.filter((w) => txt.includes(w));
+  // also preserve any quoted phrases a user typed (e.g., "gaslamp quarter")
+  const quoted = Array.from(txt.matchAll(/"([^"]+)"/g)).map((m) => m[1]);
+  return Array.from(new Set([...keep, ...quoted])).slice(0, 12);
+}
+
 // ------------ prompt ------------
 function buildPrompt(input: z.infer<typeof Body>) {
   const { travelers, timeframe, suggestions } = input;
@@ -112,6 +139,7 @@ function buildPrompt(input: z.infer<typeof Body>) {
   );
   const anchor = dislikes?.homeLocation ?? "none";
 
+  // compact traveler table for context
   const tableHeader =
     "| Name | Me? | Relation | Home | Spouse | Kids | Personality |\n|---|---|---|---|---|---|---|\n";
   const rows = travelers
@@ -125,61 +153,72 @@ function buildPrompt(input: z.infer<typeof Body>) {
     )
     .join("\n");
 
-  // Example explicitly shows map_center + markers + photos
+  const interestKeywords = extractKeywords(input);
+  const interestLine =
+    interestKeywords.length > 0
+      ? `PHOTO/POI KEYWORDS TO FAVOR: ${interestKeywords.join(", ")}`
+      : "PHOTO/POI KEYWORDS TO FAVOR: (derive from travelers + micro-itinerary)";
+
+  // Example includes POI markers + Wikimedia photos and eventful month notes
   const example = `
 EXAMPLE DESTINATION (shape only, values illustrative):
 {
-  "name": "Los Angeles",
-  "slug": "los-angeles",
-  "narrative": "Why it's good for this group… Include a tiny 2–3 bullet micro-itinerary inside the prose.",
+  "name": "San Diego",
+  "slug": "san-diego",
+  "narrative": "Why it's good… Include 2–3 bullet micro-itinerary inline: La Jolla Cove, Balboa Park, Gaslamp Quarter nightlife.",
   "months": [
-    { "month": "${timeframe.startMonth}", "note": "Mild weather; shoulder season" }
+    { "month": "${timeframe.startMonth}", "note": "Whale-watching peak. La Jolla Underwater Park visibility." },
+    { "month": "${timeframe.endMonth}", "note": "San Diego Comic-Con (late July) — plan early for crowds." }
   ],
   "per_traveler_fares": [
-    { "travelerName": "${travelers[0].name}", "from": "${travelers[0].homeLocation}", "avgUSD": 350,
+    { "travelerName": "${travelers[0].name}", "from": "${travelers[0].homeLocation}", "avgUSD": 320,
       "monthBreakdown": [
-        { "month": "${timeframe.startMonth}", "avgUSD": 340 },
-        { "month": "${timeframe.endMonth}", "avgUSD": 410 }
+        { "month": "${timeframe.startMonth}", "avgUSD": 310 },
+        { "month": "${timeframe.endMonth}", "avgUSD": 360 }
       ]
     }
   ],
   "suggested_month": "${timeframe.startMonth}",
-  "map_center": { "lat": 34.0522, "lon": -118.2437 },
+  "map_center": { "lat": 32.7157, "lon": -117.1611 },
   "map_markers": [
-    { "name": "Santa Monica Pier", "position": [34.0101, -118.4965], "blurb": "Iconic pier" },
-    { "name": "Griffith Observatory", "position": [34.1184, -118.3004] }
+    { "name": "La Jolla Cove", "position": [32.8507, -117.2720], "blurb": "Snorkel/sea lions" },
+    { "name": "Balboa Park", "position": [32.7341, -117.1446] },
+    { "name": "Gaslamp Quarter", "position": [32.7116, -117.1608], "blurb": "Nightlife/dining" }
   ],
   "photos": [
-    "https://upload.wikimedia.org/…/photo1.jpg",
-    "https://upload.wikimedia.org/…/photo2.jpg",
-    "https://upload.wikimedia.org/…/photo3.jpg",
-    "https://upload.wikimedia.org/…/photo4.jpg"
+    "https://upload.wikimedia.org/wikipedia/commons/....jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/....jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/....jpg",
+    "https://upload.wikimedia.org/wikipedia/commons/....jpg"
   ],
   "photo_attribution": "Photos via Wikimedia Commons contributors (CC BY-SA or public domain)."
 }
 `.trim();
 
   return `
-You're a travel analyst for indecisive group trips. Produce **exactly 5 destinations** with opinionated reasoning and airfare estimates. Output **strict JSON** only.
+You're a group-travel analyst. Produce **exactly 5 destinations** with opinionated reasoning and airfare estimates. Output **strict JSON** only.
 
 TRAVELERS
 ${tableHeader}${rows}
 
 TIMEFRAME: ${timeframe.startMonth} → ${timeframe.endMonth}
 USER IDEAS: ${suggestions?.trim() || "none"}
+${interestLine}
 
 Rules:
 - If ANY traveler includes the phrase "dislikes travel", **center the trip near their home** (${anchor}).
-- Otherwise, **minimize total group flight cost** while balancing interests (families, kids, mobility, vibes).
-- For each destination you MUST include:
+- Otherwise, **minimize total group flight cost** while balancing interests.
+- For each destination:
   • "name" (string) and "slug" (kebab-case)
-  • "narrative": WHY it fits the group (**include a tiny 2–3 bullet micro-itinerary inside the prose**)
-  • "per_traveler_fares": ARRAY of { travelerName, from, avgUSD, monthBreakdown? } (monthBreakdown is an ARRAY)
-  • "months": ARRAY of { month: "YYYY-MM", note: string }
-  • **"map_center": { "lat": number, "lon": number }** — REQUIRED. Use the city center or common visitor hub.
-  • "map_markers": optional ARRAY of 2–6 key landmarks with coordinates.
-  • "photos": ARRAY of **exactly 4** Wikimedia Commons URLs (landscapes/landmarks only).
-  • "photo_attribution": Short credit line (e.g., "Wikimedia Commons contributors — CC BY-SA").
+  • "narrative": WHY it fits the group (**include a 2–3 bullet micro-itinerary inline** with actual place names)
+  • "per_traveler_fares": ARRAY of { travelerName, from, avgUSD, monthBreakdown? } (monthBreakdown is an ARRAY, not a map)
+  • "months": ARRAY of { month: "YYYY-MM", note: string } with **specific, notable events** in that city/region during the timeframe (festivals, marathons, fairs, peak wildlife). Use their **typical month/week** wording, not precise dates.
+  • "map_center": { lat, lon } for the city/region center
+  • "map_markers": 2–5 POIs that match the micro-itinerary (e.g., “La Jolla Cove”, “Balboa Park”, “Gaslamp Quarter”), with coordinates
+  • "photos": ARRAY of **exactly 4** hotlink-safe **Wikimedia Commons** URLs that reflect the proposed micro-itinerary/keywords (no portraits of identifiable people)
+  • "photo_attribution": credit "Wikimedia Commons contributors" and license (e.g., "CC BY-SA" or "public domain")
+  • OPTIONAL fields: "satisfies", "suggested_month", "seasonal_warnings", "analytics"
+
 - Provide "final_recommendation": one strong pick & why (cost + fit + tradeoffs).
 - Provide optional "group_fit": { summary, priorities[], tradeoffs[] }.
 
@@ -239,7 +278,6 @@ function normalizePerTravelerFares(
       .filter(Boolean) as Array<z.infer<typeof DestFare>>;
   }
 
-  // Object map form
   if (ptf && typeof ptf === "object") {
     const out: Array<z.infer<typeof DestFare>> = [];
     for (const [key, val] of Object.entries(ptf as Record<string, any>)) {
@@ -409,19 +447,25 @@ export async function POST(req: NextRequest) {
     json.destinations = json.destinations.map((d: any, i: number) => {
       const base = d && typeof d === "object" ? d : {};
 
+      // fix name/slug
       const { name, slug } = ensureNameSlug(base, i);
+
+      // normalize per_traveler_fares
       const fares = normalizePerTravelerFares(
         base.per_traveler_fares,
         body.travelers
       );
+
+      // normalize months
       const months = normalizeMonths(base.months, body.timeframe.startMonth);
 
+      // pass-through enrichments + photos
       const analysis = {
         suggested_month: base.suggested_month,
         seasonal_warnings: base.seasonal_warnings,
         satisfies: base.satisfies,
         analytics: base.analytics,
-        map_center: base.map_center, // <-- what we need for pins
+        map_center: base.map_center,
         map_markers: base.map_markers,
         micro_itinerary: base.micro_itinerary,
         photos: Array.isArray(base.photos) ? base.photos.slice(0, 4) : undefined,
@@ -429,6 +473,7 @@ export async function POST(req: NextRequest) {
           typeof base.photo_attribution === "string" ? base.photo_attribution : undefined,
       };
 
+      // narrative fallback
       const narrative =
         typeof base.narrative === "string" && base.narrative.trim()
           ? base.narrative.trim()
@@ -441,7 +486,7 @@ export async function POST(req: NextRequest) {
         months,
         per_traveler_fares: fares,
 
-        // keep enrichments on the destination; also stored in analysis column
+        // keep enrichments on the destination; we'll also store them in analysis column
         suggested_month: analysis.suggested_month,
         seasonal_warnings: analysis.seasonal_warnings,
         satisfies: analysis.satisfies,
@@ -449,9 +494,11 @@ export async function POST(req: NextRequest) {
         map_center: analysis.map_center,
         map_markers: analysis.map_markers,
 
+        // NEW top-level (optional) fields — also duplicated into analysis for UI
         photos: analysis.photos,
         photo_attribution: analysis.photo_attribution,
 
+        // everything is also available in analysis jsonb
         analysis,
       };
     });
@@ -459,6 +506,7 @@ export async function POST(req: NextRequest) {
     if (!json.final_recommendation || typeof json.final_recommendation !== "string") {
       json.final_recommendation = fallbackFinalRecommendation(json.destinations);
     }
+
     if (!json.group_fit || typeof json.group_fit !== "object") {
       json.group_fit = {
         summary: "Balanced for cost, convenience, and interests across the group.",
@@ -477,9 +525,15 @@ export async function POST(req: NextRequest) {
       return new NextResponse("Model output did not match schema", { status: 400 });
     }
 
-    // Log how many came back with coordinates (to verify on Vercel)
-    const withCoords = parsed.destinations.filter((d) => !!d.map_center).length;
-    console.log(`[plan ${reqId}] destinations with map_center: ${withCoords}/5`);
+    // small visibility logs
+    parsed.destinations.forEach((d, i) => {
+      const photos = (d as any)?.photos ?? (d as any)?.analysis?.photos;
+      const mc = (d as any)?.map_center ?? (d as any)?.analysis?.map_center;
+      console.log(
+        `[plan ${reqId}] d${i + 1}=${d.slug} | photos=${Array.isArray(photos) ? photos.length : 0
+        } | map_center=${mc ? "yes" : "no"}`
+      );
+    });
 
     // ---- compute summary ----
     const familySizeFor = (name: string) => {
@@ -568,7 +622,7 @@ export async function POST(req: NextRequest) {
           toJsonb(d.months ?? []),
           toJsonb(d.per_traveler_fares),
           toJsonb(totals),
-          toJsonb(d), // includes photos, photo_attribution, map_center, map_markers
+          toJsonb(d), // includes photos & photo_attribution
         ]
       );
     }
