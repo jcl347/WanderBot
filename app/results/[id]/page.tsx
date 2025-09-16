@@ -12,13 +12,14 @@ import { q } from "@/lib/db";
 
 type PageProps = { params: Promise<{ id: string }> };
 
+// ---- canonical destination list shape used by the UI
 type ListDest = {
   slug: string;
   name: string;
   narrative: string;
-  analysis: any; // normalized to an object in both mock & DB paths
+  analysis: Record<string, any>; // always an object (never undefined/null)
   map_center?: { lat: number; lon: number } | null;
-  per_traveler_fares?: Array<{
+  per_traveler_fares: Array<{
     travelerName: string;
     from: string;
     avgUSD: number;
@@ -26,16 +27,16 @@ type ListDest = {
   }>;
 };
 
-// Shape returned by DB query (use COALESCE to avoid nulls)
+// ---- DB row shape returned by SQL (normalized with COALESCE)
 type DbRow = {
   slug: string;
   name: string;
   narrative: string;
-  analysis: any; // jsonb object
+  analysis: Record<string, any>;
   per_traveler_fares: ListDest["per_traveler_fares"];
 };
 
-// Fallback lat/lon for demo slugs if model/DB didn’t provide map_center
+// fallback lat/lon for demo slugs if model/DB didn’t provide map_center
 const FALLBACK_CENTERS: Record<string, { lat: number; lon: number }> = {
   lisbon: { lat: 38.7223, lon: -9.1393 },
   "mexico-city": { lat: 19.4326, lon: -99.1332 },
@@ -44,13 +45,13 @@ const FALLBACK_CENTERS: Record<string, { lat: number; lon: number }> = {
   honolulu: { lat: 21.3069, lon: -157.8583 },
 };
 
-// Soft brand palette variants (sky/emerald/indigo/amber/rose)
+// soft brand palette variants (slightly toned to match home page)
 const CARD_TINTS = [
-  { bg: "bg-sky-50/70", ring: "ring-sky-200" },
-  { bg: "bg-emerald-50/70", ring: "ring-emerald-200" },
-  { bg: "bg-indigo-50/70", ring: "ring-indigo-200" },
-  { bg: "bg-amber-50/70", ring: "ring-amber-200" },
-  { bg: "bg-rose-50/70", ring: "ring-rose-200" },
+  { bg: "bg-sky-50/80", ring: "ring-sky-200", chip: "bg-sky-200/70" },
+  { bg: "bg-emerald-50/80", ring: "ring-emerald-200", chip: "bg-emerald-200/70" },
+  { bg: "bg-indigo-50/80", ring: "ring-indigo-200", chip: "bg-indigo-200/70" },
+  { bg: "bg-amber-50/80", ring: "ring-amber-200", chip: "bg-amber-200/70" },
+  { bg: "bg-rose-50/80", ring: "ring-rose-200", chip: "bg-rose-200/70" },
 ];
 
 export default async function ResultsPage({ params }: PageProps) {
@@ -65,27 +66,29 @@ export default async function ResultsPage({ params }: PageProps) {
   let dests: ListDest[] = [];
 
   if (useMock) {
-    // Mock plan + destinations for demo path
+    // demo path
     plan = {
       id: "demo",
       final_recommendation: mockPlan.final_recommendation,
       summary: mockPlan.summary,
     };
-    dests = mockDestinations.map((d) => ({
+
+    dests = mockDestinations.map<ListDest>((d) => ({
       slug: d.slug,
       name: d.name,
       narrative: d.narrative,
-      analysis: d.analysis ?? {},
+      analysis: (d as any).analysis ?? {},
       map_center: FALLBACK_CENTERS[d.slug as keyof typeof FALLBACK_CENTERS] ?? null,
-      per_traveler_fares: d.per_traveler_fares ?? [],
+      per_traveler_fares: (d as any).per_traveler_fares ?? [],
     }));
   } else {
+    // fetch plan
     const rows = await q<any>("select * from plans where id = $1", [id]);
     plan = rows?.[0];
     if (!plan) return notFound();
 
-    // Ensure analysis is always an object for TS via COALESCE
-    const rawDests = await q<DbRow>(
+    // fetch destinations; COALESCE -> types are stable
+    const rawDests = (await q<DbRow>(
       `
       select
         slug,
@@ -98,9 +101,9 @@ export default async function ResultsPage({ params }: PageProps) {
       order by name asc
       `,
       [id]
-    );
+    )) as DbRow[];
 
-    dests = rawDests.map((d) => ({
+    dests = rawDests.map<ListDest>((d: DbRow) => ({
       slug: d.slug,
       name: d.name,
       narrative: d.narrative,
@@ -119,7 +122,7 @@ export default async function ResultsPage({ params }: PageProps) {
     }[];
   };
 
-  // Build markers for map
+  // map markers
   const markers = dests
     .map((d) => {
       const mc =
@@ -130,7 +133,7 @@ export default async function ResultsPage({ params }: PageProps) {
     })
     .filter(Boolean) as { position: [number, number]; label: string }[];
 
-  // Choose a reasonable center: first marker or Atlantic view
+  // reasonable default center
   const center: [number, number] =
     markers.length > 0 ? markers[0]!.position : [30, -30];
 
@@ -153,14 +156,14 @@ export default async function ResultsPage({ params }: PageProps) {
       <SectionCard>
         <h2 className="text-lg font-semibold mb-4">Cost comparison</h2>
         <CostComparisons data={summary.destinations} />
-        {/* Soft brand-tinted legend chips */}
+        {/* brand-tinted legend chips */}
         <div className="mt-4 flex flex-wrap gap-2">
           {summary.destinations.map((d, i) => {
             const tint = CARD_TINTS[i % CARD_TINTS.length];
             return (
               <span
                 key={d.slug}
-                className={`inline-flex items-center gap-2 rounded-full ${tint.bg} ring-1 ${tint.ring} px-3 py-1 text-xs`}
+                className={`inline-flex items-center gap-2 rounded-full ${tint.chip} ring-1 ${tint.ring} px-3 py-1 text-xs`}
                 title={`${d.name}: group $${d.totalGroupUSD.toLocaleString()}, per person $${d.avgPerPersonUSD.toLocaleString()}`}
               >
                 <span className="h-2 w-2 rounded-full bg-black/70" />
