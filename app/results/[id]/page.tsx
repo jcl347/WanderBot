@@ -13,11 +13,11 @@ type PageProps = { params: Promise<{ id: string }> };
 
 // fallback lat/lon for demo slugs if model/DB didn’t provide map_center
 const FALLBACK_CENTERS: Record<string, { lat: number; lon: number }> = {
-  "lisbon": { lat: 38.7223, lon: -9.1393 },
+  lisbon: { lat: 38.7223, lon: -9.1393 },
   "mexico-city": { lat: 19.4326, lon: -99.1332 },
-  "montreal": { lat: 45.5017, lon: -73.5673 },
+  montreal: { lat: 45.5017, lon: -73.5673 },
   "san-diego": { lat: 32.7157, lon: -117.1611 },
-  "honolulu": { lat: 21.3069, lon: -157.8583 },
+  honolulu: { lat: 21.3069, lon: -157.8583 },
 };
 
 export default async function ResultsPage({ params }: PageProps) {
@@ -29,7 +29,12 @@ export default async function ResultsPage({ params }: PageProps) {
     process.env.MOCK === "1";
 
   let plan: any;
-  let dests: Array<{ slug: string; name: string; narrative: string; map_center?: { lat: number; lon: number } }> = [];
+  let dests: Array<{
+    slug: string;
+    name: string;
+    narrative: string;
+    map_center?: { lat: number; lon: number } | null;
+  }> = [];
 
   if (useMock) {
     plan = {
@@ -76,7 +81,8 @@ export default async function ResultsPage({ params }: PageProps) {
   // Build markers for map
   const markers = dests
     .map((d) => {
-      const mc = d.map_center ?? FALLBACK_CENTERS[d.slug as keyof typeof FALLBACK_CENTERS];
+      const mc =
+        d.map_center ?? FALLBACK_CENTERS[d.slug as keyof typeof FALLBACK_CENTERS];
       if (!mc) return null;
       return { position: [mc.lat, mc.lon] as [number, number], label: d.name };
     })
@@ -97,18 +103,18 @@ export default async function ResultsPage({ params }: PageProps) {
 
       <SectionCard>
         <h1 className="text-2xl font-semibold">Your trip plan</h1>
-        <p className="mt-2 text-neutral-700 whitespace-pre-line">
+        <p className="mt-2 whitespace-pre-line text-neutral-700">
           {plan.final_recommendation}
         </p>
       </SectionCard>
 
       <SectionCard>
-        <h2 className="text-lg font-semibold mb-4">Cost comparison</h2>
+        <h2 className="mb-4 text-lg font-semibold">Cost comparison</h2>
         <CostComparisons data={summary.destinations} />
       </SectionCard>
 
       <SectionCard>
-        <h2 className="text-lg font-semibold mb-3">Trip map</h2>
+        <h2 className="mb-3 text-lg font-semibold">Trip map</h2>
         <div className="h-72 w-full">
           <MapLeaflet center={center} zoom={2} markers={markers} />
         </div>
@@ -118,20 +124,34 @@ export default async function ResultsPage({ params }: PageProps) {
       </SectionCard>
 
       <SectionCard>
-        <h2 className="text-lg font-semibold mb-3">Destinations</h2>
-        <div className="grid md:grid-cols-2 gap-3">
-          {dests.map((d) => (
-            <Link
-              key={d.slug}
-              href={`/results/${useMock ? "demo" : id}/dest/${d.slug}`}
-              className="rounded-xl border p-4 bg-white/90 hover:shadow-sm"
-            >
-              <div className="font-medium">{d.name}</div>
-              <div className="text-sm text-neutral-600 line-clamp-3">
-                {d.narrative}
-              </div>
-            </Link>
-          ))}
+        <h2 className="mb-3 text-lg font-semibold">Destinations</h2>
+        <div className="grid gap-3 md:grid-cols-2">
+          {dests.map((d) => {
+            const palette = [
+              "from-sky-50 to-sky-100 border-sky-200",
+              "from-emerald-50 to-emerald-100 border-emerald-200",
+              "from-amber-50 to-amber-100 border-amber-200",
+              "from-violet-50 to-violet-100 border-violet-200",
+              "from-rose-50 to-rose-100 border-rose-200",
+            ];
+            const idx =
+              Math.abs(
+                d.slug.split("").reduce((a, c) => a + c.charCodeAt(0), 0)
+              ) % palette.length;
+
+            return (
+              <Link
+                key={d.slug}
+                href={`/results/${useMock ? "demo" : id}/dest/${d.slug}`}
+                className={`rounded-xl border p-4 bg-gradient-to-br ${palette[idx]} transition hover:shadow-md`}
+              >
+                <div className="font-semibold">{d.name}</div>
+                <div className="mt-1 line-clamp-3 text-sm text-neutral-700">
+                  {d.narrative}
+                </div>
+              </Link>
+            );
+          })}
         </div>
       </SectionCard>
     </BackgroundMap>
