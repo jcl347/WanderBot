@@ -11,7 +11,7 @@ import { q } from "@/lib/db";
 
 type PageProps = { params: Promise<{ id: string }> };
 
-// fallback lat/lon for demo slugs if model/DB didn’t provide map_center
+// Fallback lat/lon if a dest has no map_center in analysis
 const FALLBACK_CENTERS: Record<string, { lat: number; lon: number }> = {
   lisbon: { lat: 38.7223, lon: -9.1393 },
   "mexico-city": { lat: 19.4326, lon: -99.1332 },
@@ -19,6 +19,23 @@ const FALLBACK_CENTERS: Record<string, { lat: number; lon: number }> = {
   "san-diego": { lat: 32.7157, lon: -117.1611 },
   honolulu: { lat: 21.3069, lon: -157.8583 },
 };
+
+// Soft, brand-aligned variants (very light gradients + matching borders)
+// The card style will rotate through these based on slug hash.
+const CARD_VARIANTS = [
+  { grad: "from-sky-50 to-white", border: "border-sky-200", title: "text-sky-900" },
+  { grad: "from-emerald-50 to-white", border: "border-emerald-200", title: "text-emerald-900" },
+  { grad: "from-indigo-50 to-white", border: "border-indigo-200", title: "text-indigo-900" },
+  { grad: "from-amber-50 to-white", border: "border-amber-200", title: "text-amber-900" },
+  { grad: "from-rose-50 to-white", border: "border-rose-200", title: "text-rose-900" },
+];
+
+// Simple deterministic hash so the same slug always gets the same soft color
+function slugIndex(slug: string, mod = CARD_VARIANTS.length) {
+  let h = 0;
+  for (let i = 0; i < slug.length; i++) h = (h * 31 + slug.charCodeAt(i)) >>> 0;
+  return h % mod;
+}
 
 export default async function ResultsPage({ params }: PageProps) {
   const { id } = await params;
@@ -33,6 +50,9 @@ export default async function ResultsPage({ params }: PageProps) {
     slug: string;
     name: string;
     narrative: string;
+    months?: any[];
+    per_traveler_fares?: any[];
+    analysis?: any;
     map_center?: { lat: number; lon: number } | null;
   }> = [];
 
@@ -46,6 +66,9 @@ export default async function ResultsPage({ params }: PageProps) {
       slug: d.slug,
       name: d.name,
       narrative: d.narrative,
+      months: d.months,
+      per_traveler_fares: d.per_traveler_fares,
+      analysis: d.analysis,
       map_center: FALLBACK_CENTERS[d.slug as keyof typeof FALLBACK_CENTERS],
     }));
   } else {
@@ -53,18 +76,22 @@ export default async function ResultsPage({ params }: PageProps) {
     plan = rows?.[0];
     if (!plan) return notFound();
 
-    // try to pull map_center if your route stored it in analysis (jsonb)
+    // Pull the extra fields the detail page expects
     dests = await q<any>(
-      `select slug, name, narrative, analysis
+      `select slug, name, narrative, months, per_traveler_fares, analysis
        from destinations
        where plan_id = $1
        order by name asc`,
       [id]
     );
+
     dests = dests.map((d: any) => ({
       slug: d.slug,
       name: d.name,
       narrative: d.narrative,
+      months: d.months,
+      per_traveler_fares: d.per_traveler_fares,
+      analysis: d.analysis,
       map_center: d.analysis?.map_center ?? null,
     }));
   }
@@ -78,17 +105,21 @@ export default async function ResultsPage({ params }: PageProps) {
     }[];
   };
 
-  // Build markers for map
+  // Build markers for the overview map
   const markers = dests
     .map((d) => {
       const mc =
-        d.map_center ?? FALLBACK_CENTERS[d.slug as keyof typeof FALLBACK_CENTERS];
+        d.map_center ??
+        FALLBACK_CENTERS[d.slug as keyof typeof FALLBACK_CENTERS];
       if (!mc) return null;
-      return { position: [mc.lat, mc.lon] as [number, number], label: d.name };
+      return {
+        position: [mc.lat, mc.lon] as [number, number],
+        label: d.name,
+      };
     })
     .filter(Boolean) as { position: [number, number]; label: string }[];
 
-  // Choose a reasonable center: first marker or Atlantic view
+  // Pick a reasonable center
   const center: [number, number] =
     markers.length > 0 ? markers[0]!.position : [30, -30];
 
@@ -125,29 +156,46 @@ export default async function ResultsPage({ params }: PageProps) {
 
       <SectionCard>
         <h2 className="mb-3 text-lg font-semibold">Destinations</h2>
+
         <div className="grid gap-3 md:grid-cols-2">
           {dests.map((d) => {
-            const palette = [
-              "from-sky-50 to-sky-100 border-sky-200",
-              "from-emerald-50 to-emerald-100 border-emerald-200",
-              "from-amber-50 to-amber-100 border-amber-200",
-              "from-violet-50 to-violet-100 border-violet-200",
-              "from-rose-50 to-rose-100 border-rose-200",
-            ];
-            const idx =
-              Math.abs(
-                d.slug.split("").reduce((a, c) => a + c.charCodeAt(0), 0)
-              ) % palette.length;
+            const idx = slugIndex(d.slug);
+            const v = CARD_VARIANTS[idx];
 
             return (
               <Link
                 key={d.slug}
                 href={`/results/${useMock ? "demo" : id}/dest/${d.slug}`}
-                className={`rounded-xl border p-4 bg-gradient-to-br ${palette[idx]} transition hover:shadow-md`}
+                className={[
+                  "rounded-2xl border p-4 shadow-sm transition hover:shadow-md",
+                  "bg-gradient-to-br",
+                  v.grad,
+                  v.border,
+                ].join(" ")}
               >
-                <div className="font-semibold">{d.name}</div>
+                <div className={`font-semibold ${v.title}`}>{d.name}</div>
                 <div className="mt-1 line-clamp-3 text-sm text-neutral-700">
                   {d.narrative}
+                </div>
+
+                {/* Small hint row */}
+                <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                  {Array.isArray(d.months) && d.months.length > 0 && (
+                    <span className="rounded-full bg-white/60 px-2 py-0.5 text-neutral-700 border">
+                      📅 {d.months[0].month}
+                    </span>
+                  )}
+                  {Array.isArray(d.per_traveler_fares) &&
+                    d.per_traveler_fares.length > 0 && (
+                      <span className="rounded-full bg-white/60 px-2 py-0.5 text-neutral-700 border">
+                        💸 Avg ${Math.round(
+                          d.per_traveler_fares.reduce(
+                            (a: number, f: any) => a + (Number(f.avgUSD) || 0),
+                            0
+                          ) / d.per_traveler_fares.length
+                        ).toLocaleString()}
+                      </span>
+                    )}
                 </div>
               </Link>
             );
