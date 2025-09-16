@@ -1,220 +1,147 @@
 // components/LiveCollage.tsx
 "use client";
-import React from "react";
 
-type Img = { url: string; title?: string; source?: string };
-
-// Small, safe shuffle
-function shuffle<T>(arr: T[]) {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = (Math.random() * (i + 1)) | 0;
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
-}
-
-function stem(u: string) {
-  try {
-    const x = new URL(u);
-    const p = x.pathname.split("/").pop() || "";
-    return `${x.hostname}/${p.replace(/\.(jpg|jpeg|png|webp|gif|bmp|tiff).*$/i, "")}`.toLowerCase();
-  } catch {
-    return u;
-  }
-}
-
-async function verifyUrl(url: string, signal: AbortSignal): Promise<boolean> {
-  try {
-    const r = await fetch(url, {
-      method: "GET",
-      headers: { range: "bytes=0-1023" },
-      signal,
-    });
-    if (!r.ok) return false;
-    const ct = r.headers.get("content-type") || "";
-    return ct.startsWith("image/");
-  } catch {
-    return false;
-  }
-}
-
-async function fetchImages(query: string, want: number, signal: AbortSignal): Promise<Img[]> {
-  const overshoot = Math.max(want * 3, want + 12); // over-fetch to allow for dead links
-  const res = await fetch(
-    `/api/images?q=${encodeURIComponent(query)}&count=${overshoot}`,
-    { cache: "no-store", signal }
-  );
-  const j = (await res.json()) as { images: Img[] };
-  return Array.isArray(j.images) ? j.images : [];
-}
-
-async function verifyMany(candidates: Img[], want: number, signal: AbortSignal): Promise<Img[]> {
-  const out: Img[] = [];
-  const dedup = new Set<string>();
-  const queue = candidates.filter((c) => {
-    const key = stem(c.url);
-    if (dedup.has(key)) return false;
-    dedup.add(key);
-    return true;
-  });
-
-  // modest concurrency to be gentle on CDNs
-  const CONCURRENCY = 4;
-  let idx = 0;
-  async function worker() {
-    while (!signal.aborted && out.length < want && idx < queue.length) {
-      const cand = queue[idx++];
-      // eslint-disable-next-line no-await-in-loop
-      const ok = await verifyUrl(cand.url, signal);
-      if (ok) out.push(cand);
-    }
-  }
-  const jobs = Array.from({ length: CONCURRENCY }, () => worker());
-  await Promise.race([Promise.all(jobs), new Promise<void>((_, rej) => {
-    signal.addEventListener("abort", () => rej(new Error("aborted")));
-  })]).catch(() => { /* ignore on abort */ });
-
-  return out.slice(0, want);
-}
-
-function Tile({ src, alt, span }: { src: string; alt?: string; span: "sm" | "md" | "lg" }) {
-  const classFor = span === "lg"
-    ? "col-span-2 row-span-2"
-    : span === "md"
-    ? "col-span-2 row-span-1"
-    : "col-span-1 row-span-1";
-
-  return (
-    <div className={`rounded-xl overflow-hidden border bg-white/60 ${classFor}`}>
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={src}
-        alt={alt || ""}
-        loading="lazy"
-        className="h-full w-full object-cover transition-transform duration-200 hover:scale-[1.03]"
-      />
-    </div>
-  );
-}
+import React, { useEffect, useMemo, useState } from "react";
 
 /**
- * LiveCollage fetches from two queries, verifies links, fills left/right evenly,
- * and renders a tasteful mosaic.
+ * Use like:
+ *   <LiveCollage side="left"  dest={dest} />
+ *   <LiveCollage side="right" dest={dest} />
+ *
+ * It builds multiple DDG queries from the destination’s:
+ * - name / city / country
+ * - analysis.image_queries (from the LLM, if present)
+ * - highlights, map_markers, and nouns pulled from narrative
+ *
+ * Then it calls /api/images?queries=[...] and renders a collage.
+ * The container reserves height so the center analytics never jump.
  */
-export default function LiveCollage({
-  leftQuery,
-  rightQuery,
-  leftCount = 8,
-  rightCount = 8,
-  leftTitle = "Vibe check",
-  rightTitle = "More views",
-}: {
-  leftQuery: string;
-  rightQuery: string;
-  leftCount?: number;
-  rightCount?: number;
-  leftTitle?: string;
-  rightTitle?: string;
-}) {
-  const [leftImgs, setLeftImgs] = React.useState<Img[] | null>(null);
-  const [rightImgs, setRightImgs] = React.useState<Img[] | null>(null);
-  const [loading, setLoading] = React.useState(true);
 
-  React.useEffect(() => {
-    const ctrl = new AbortController();
-    (async () => {
-      setLoading(true);
+type Props = {
+  side: "left" | "right";
+  dest: any; // same shape you pass to DestDetailClient
+  max?: number; // how many images to show in this column
+  className?: string;
+};
+
+type Img = { url: string; title?: string };
+
+function tokens(narr: string, max = 8): string[] {
+  const words = (narr || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s,/-]+/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 4 && !["with", "that", "this", "from", "into", "near", "over", "under"].includes(w));
+  // crude "importance": frequency
+  const freq = new Map<string, number>();
+  words.forEach((w) => freq.set(w, (freq.get(w) || 0) + 1));
+  return Array.from(freq.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, max)
+    .map(([w]) => w);
+}
+
+export default function LiveCollage({ side, dest, max = 8, className }: Props) {
+  const [imgs, setImgs] = useState<Img[] | null>(null);
+
+  const queries = useMemo(() => {
+    const q: string[] = [];
+
+    const name = (dest?.name || "").trim();
+    if (name) q.push(`${name} skyline`, `${name} landmarks`, `${name} nightlife`, `${name} nature`);
+
+    const analysis = dest?.analysis || {};
+    const hl: string[] = Array.isArray(analysis.highlights) ? analysis.highlights : [];
+    const markers: string[] = Array.isArray(analysis.map_markers)
+      ? (analysis.map_markers as any[]).map((m) => m?.name).filter(Boolean)
+      : [];
+
+    const llmQs: string[] = Array.isArray(analysis.image_queries) ? analysis.image_queries : [];
+
+    // narrative tokens to bias local themes
+    const narrTokens = tokens(dest?.narrative || "");
+
+    // merge with bias toward variety
+    const mixes = [
+      ...llmQs.map((x) => `${name} ${x}`),
+      ...hl.map((x) => `${name} ${x}`),
+      ...markers.map((x) => `${name} ${x}`),
+      ...narrTokens.map((x) => `${name} ${x}`),
+    ]
+      .map((s) => s.replace(/\s+/g, " ").trim())
+      .filter(Boolean);
+
+    // fallback if everything above is empty
+    if (!mixes.length) mixes.push(`${name} travel highlights`, `${name} attractions`);
+
+    // Trim to avoid over-fetch; server dedupes anyway
+    return Array.from(new Set(mixes)).slice(0, 12);
+  }, [dest]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function run() {
       try {
-        // fetch in parallel
-        const [Lraw, Rraw] = await Promise.all([
-          fetchImages(leftQuery, leftCount, ctrl.signal),
-          fetchImages(rightQuery, rightCount, ctrl.signal),
-        ]);
-
-        // shuffle before verify so we get variation
-        shuffle(Lraw);
-        shuffle(Rraw);
-
-        const [Lok, Rok] = await Promise.all([
-          verifyMany(Lraw, leftCount, ctrl.signal),
-          verifyMany(Rraw, rightCount, ctrl.signal),
-        ]);
-
-        // If one side is short, borrow from the other’s remainder
-        const Lneed = Math.max(0, leftCount - Lok.length);
-        const Rneed = Math.max(0, rightCount - Rok.length);
-
-        // pull extra (unverified) from the opposite raw lists and verify only what we need
-        if (Lneed > 0) {
-          const extras = Rraw.filter(
-            (x) => !Rok.some((y) => stem(y.url) === stem(x.url))
-          );
-          const verified = await verifyMany(extras, Lneed, ctrl.signal);
-          Lok.push(...verified);
-        }
-        if (Rneed > 0) {
-          const extras = Lraw.filter(
-            (x) => !Lok.some((y) => stem(y.url) === stem(x.url))
-          );
-          const verified = await verifyMany(extras, Rneed, ctrl.signal);
-          Rok.push(...verified);
-        }
-
-        setLeftImgs(Lok.slice(0, leftCount));
-        setRightImgs(Rok.slice(0, rightCount));
+        setImgs(null); // show skeleton
+        const url =
+          "/api/images?count=" +
+          encodeURIComponent(String(max)) +
+          "&queries=" +
+          encodeURIComponent(JSON.stringify(queries));
+        const res = await fetch(url, { cache: "no-store" });
+        const json = await res.json();
+        if (!cancelled) setImgs(Array.isArray(json.images) ? json.images : []);
       } catch {
-        setLeftImgs([]);
-        setRightImgs([]);
-      } finally {
-        setLoading(false);
+        if (!cancelled) setImgs([]);
       }
-    })();
-    return () => ctrl.abort();
-  }, [leftQuery, rightQuery, leftCount, rightCount]);
-
-  const Skeleton = (
-    <div className="text-sm text-neutral-500">Finding photos…</div>
-  );
-
-  const Grid = (items: Img[]) => {
-    // pleasant pattern: lg sprinkled, a few md, many sm
-    const pattern: Array<"sm" | "md" | "lg"> = ["lg", "sm", "md", "sm", "sm", "md", "sm", "sm"];
-    return (
-      <div
-        className="
-          grid grid-cols-2 auto-rows-[120px] gap-2
-          [@media(min-width:1280px)]:auto-rows-[140px]
-        "
-      >
-        {items.map((img, i) => (
-          <Tile key={`${i}-${img.url}`} src={img.url} alt={img.title} span={pattern[i % pattern.length]} />
-        ))}
-      </div>
-    );
-  };
+    }
+    if (queries.length) run();
+    return () => {
+      cancelled = true;
+    };
+  }, [queries, max]);
 
   return (
-    <div className="hidden md:grid md:grid-cols-[320px_1fr_320px] md:gap-4">
-      {/* LEFT */}
-      <aside className="md:sticky md:top-4 md:h-[calc(100vh-2rem)] md:overflow-auto">
-        <div className="rounded-2xl border bg-white/60 p-3 shadow-sm">
-          <div className="text-lg font-semibold mb-2">{leftTitle}</div>
-          {loading ? Skeleton : (leftImgs && leftImgs.length ? Grid(leftImgs) : <div className="text-sm text-neutral-500">No live images found.</div>)}
-        </div>
-      </aside>
+    <aside
+      className={[
+        "sticky top-6 h-[calc(100vh-3rem)] overflow-auto rounded-xl border bg-white/80 backdrop-blur-sm p-3",
+        "shadow-sm",
+        "min-w-[240px]",
+        className || "",
+      ].join(" ")}
+      aria-label={side === "left" ? "Vibe check" : "More views"}
+    >
+      <div className="text-sm font-medium mb-2">{side === "left" ? "Vibe check" : "More views"}</div>
 
-      {/* MIDDLE – caller supplies content here via children */}
-      <div className="px-0">
-        {/* children injected by parent */}
-      </div>
-
-      {/* RIGHT */}
-      <aside className="md:sticky md:top-4 md:h-[calc(100vh-2rem)] md:overflow-auto">
-        <div className="rounded-2xl border bg-white/60 p-3 shadow-sm">
-          <div className="text-lg font-semibold mb-2">{rightTitle}</div>
-          {loading ? Skeleton : (rightImgs && rightImgs.length ? Grid(rightImgs) : <div className="text-sm text-neutral-500">No live images found.</div>)}
+      {/* Skeleton keeps layout stable while fetching */}
+      {!imgs && (
+        <div className="grid gap-2">
+          {Array.from({ length: max }).map((_, i) => (
+            <div key={i} className="rounded-xl bg-neutral-200/60 animate-pulse aspect-[4/3]" />
+          ))}
         </div>
-      </aside>
-    </div>
+      )}
+
+      {imgs && imgs.length === 0 && (
+        <div className="text-xs text-neutral-500">No live images found.</div>
+      )}
+
+      {imgs && imgs.length > 0 && (
+        <div className="grid gap-2">
+          {imgs.map((im: Img, i: number) => (
+            <div key={`${i}-${im.url}`} className="overflow-hidden rounded-xl border bg-white/60 aspect-[4/3]">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={im.url}
+                alt={im.title || ""}
+                className="w-full h-full object-cover transition-transform duration-200 hover:scale-[1.03]"
+                loading="lazy"
+                referrerPolicy="no-referrer"
+              />
+            </div>
+          ))}
+        </div>
+      )}
+    </aside>
   );
 }

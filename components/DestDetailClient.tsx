@@ -1,41 +1,30 @@
 // components/DestDetailClient.tsx
 "use client";
+
 import React from "react";
 import SectionCard from "./SectionCard";
 import MonthLine from "./MonthLine";
 import MapLeaflet from "./MapLeaflet";
 import LiveCollage from "./LiveCollage";
 
-const INTEREST_KEYWORDS = [
-  "beach","food","nightlife","museum","hiking","park","art","market",
-  "festival","historic","architecture","music","shopping","viewpoint",
-  "gallery","street art","bar","coffee","wine","brewery","surf","zoo"
-];
-
-function pickKeywords(narrative: string, extra: string[] = [], max = 10) {
-  const found = new Set<string>();
-  const lower = (narrative || "").toLowerCase();
-  for (const k of INTEREST_KEYWORDS) if (lower.includes(k)) found.add(k);
-  for (const e of extra) {
-    const w = (e || "").toLowerCase();
-    for (const k of INTEREST_KEYWORDS) if (w.includes(k)) found.add(k);
-  }
-  return Array.from(found).slice(0, max);
-}
-
 export default function DestDetailClient({ dest }: { dest: any }) {
   const fares = dest.per_traveler_fares ?? [];
 
-  // Months for chart
+  // Build chart months
   const monthSet = new Set<string>();
-  fares.forEach((f: any) => f.monthBreakdown?.forEach((m: any) => monthSet.add(m.month)));
+  fares.forEach((f: any) =>
+    f.monthBreakdown?.forEach((m: any) => monthSet.add(m.month))
+  );
   let months = Array.from(monthSet).sort();
   if (months.length === 0) {
     const base = (dest.best_month || dest.suggested_month || "2026-01").slice(0, 7);
     const [y, m] = base.split("-").map((x: string) => Number(x));
     const trio = [new Date(y, m - 2, 1), new Date(y, m - 1, 1), new Date(y, m, 1)];
-    months = trio.map((d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+    months = trio.map(
+      (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
+    );
   }
+
   const series = months.map((m) => {
     const row: Record<string, number | string | null> = { month: m };
     fares.forEach((f: any) => {
@@ -45,7 +34,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     return row;
   });
 
-  // Map
+  // Map bits
   const analysis = dest.analysis ?? {};
   const center = analysis.map_center ?? dest.map_center ?? { lat: 40, lon: -20 };
   const markers = (analysis.map_markers ?? []).map((p: any) => ({
@@ -53,49 +42,31 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     label: p.name,
   }));
 
-  // Query construction
-  const highlightWords: string[] = Array.isArray(analysis.highlights) ? analysis.highlights : [];
-  const markerNames: string[] = (analysis.map_markers || []).map((m: any) => m?.name).filter(Boolean);
-  const monthNotes: string[] = Array.isArray(dest.months)
-    ? dest.months.map((m: any) => String(m?.note || ""))
+  // Image queries — prefer model-provided
+  const queries: string[] = Array.isArray(analysis.image_queries)
+    ? analysis.image_queries.filter((s: any) => typeof s === "string" && s.trim())
     : [];
 
-  const base = dest.name;
-  const kw = pickKeywords(dest.narrative || "", [...highlightWords, ...markerNames, ...monthNotes], 12);
-
-  // Left: landmarks/sights + events
-  const leftQuery = [
-    base,
-    "landmarks sights skyline",
-    markerNames.slice(0, 6).join(" "),
-    kw.join(" "),
-    monthNotes.slice(0, 4).join(" "),
-  ]
-    .filter(Boolean)
-    .join(" ");
-
-  // Right: lifestyle (food/nightlife/market/music) + remaining keywords
-  const lifestyle = ["food","nightlife","market","music","shopping","bar","brewery","coffee"]
-    .filter((k) => kw.includes(k))
-    .join(" ");
-  const rightQuery = [
-    base,
-    lifestyle || "city streets lifestyle",
-    highlightWords.slice(0, 6).join(" "),
-  ]
-    .filter(Boolean)
-    .join(" ");
+  // Split evenly for left/right rails
+  const half = Math.ceil(queries.length / 2);
+  const leftList = queries.slice(0, half);
+  const rightList = queries.slice(half);
 
   return (
     <>
-      {/* Desktop: side-by-side collage panes; we inject middle analytics below */}
-      <LiveCollage leftQuery={leftQuery} rightQuery={rightQuery} leftCount={10} rightCount={10} />
+      <LiveCollage
+        leftList={leftList}
+        rightList={rightList}
+        leftCount={10}
+        rightCount={10}
+      />
 
-      {/* Middle analytics/content that LiveCollage reserves space for */}
       <div className="md:col-start-2 md:row-start-1 md:px-0 space-y-4">
         <SectionCard>
           <h1 className="text-2xl font-semibold">{dest.name}</h1>
-          <p className="text-neutral-700 whitespace-pre-line mt-2">{dest.narrative}</p>
+          <p className="text-neutral-700 whitespace-pre-line mt-2">
+            {dest.narrative}
+          </p>
         </SectionCard>
 
         <SectionCard>
@@ -117,7 +88,8 @@ export default function DestDetailClient({ dest }: { dest: any }) {
           <h2 className="text-lg font-semibold mb-3">Monthly fare trend</h2>
           <MonthLine data={series} />
           <p className="text-xs text-neutral-500 mt-2">
-            Estimated averages per traveler (round-trip, USD). Missing months are inferred.
+            Estimated averages per traveler (round-trip, USD). Missing months are
+            inferred.
           </p>
         </SectionCard>
 
@@ -133,7 +105,9 @@ export default function DestDetailClient({ dest }: { dest: any }) {
         </SectionCard>
 
         <SectionCard>
-          <h2 className="text-lg font-semibold mb-3">Per-traveler average fares</h2>
+          <h2 className="text-lg font-semibold mb-3">
+            Per-traveler average fares
+          </h2>
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead>
@@ -148,7 +122,9 @@ export default function DestDetailClient({ dest }: { dest: any }) {
                   <tr key={i} className="border-t">
                     <td className="p-2">{f.travelerName}</td>
                     <td className="p-2">{f.from}</td>
-                    <td className="p-2">${Math.round(f.avgUSD).toLocaleString()}</td>
+                    <td className="p-2">
+                      ${Math.round(f.avgUSD).toLocaleString()}
+                    </td>
                   </tr>
                 ))}
               </tbody>

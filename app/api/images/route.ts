@@ -1,55 +1,20 @@
 // app/api/images/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
-export const runtime = "nodejs"; // needed for ranged fetch & timeouts
-export const dynamic = "force-dynamic";
+// ---- simple helpers ----
+const HEAD_TIMEOUT_MS = 6000;
+const MAX_PER_QUERY = 30;
 
-type Img = { url: string; title?: string; source?: string };
-
-function log(scope: string, msg: string, extra: Record<string, any> = {}) {
-  // Pretty, compact logs that are easy to filter in Vercel
-  console.info(`[images:${scope}] ${msg} ${JSON.stringify(extra)}`);
+function uniq<T>(arr: T[]) {
+  return Array.from(new Set(arr));
 }
 
-function shuffle<T>(arr: T[]) {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = (Math.random() * (i + 1)) | 0;
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
-}
-
-function stem(u: string) {
+async function headOk(url: string): Promise<boolean> {
   try {
-    const x = new URL(u);
-    const p = x.pathname.split("/").pop() || "";
-    // hostname + filename (no extension) = good enough dedupe key
-    return `${x.hostname}/${p.replace(/\.(jpg|jpeg|png|webp|gif|bmp|tiff).*$/i, "")}`.toLowerCase();
-  } catch {
-    return u.toLowerCase();
-  }
-}
-
-// --- Network helpers --------------------------------------------------------
-
-async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, ms = 8000) {
-  const ctrl = new AbortController();
-  const id = setTimeout(() => ctrl.abort(), ms);
-  try {
-    const res = await fetch(input, { ...init, signal: ctrl.signal });
-    return res;
-  } finally {
+    const ctl = new AbortController();
+    const id = setTimeout(() => ctl.abort(), HEAD_TIMEOUT_MS);
+    const res = await fetch(url, { method: "HEAD", signal: ctl.signal });
     clearTimeout(id);
-  }
-}
-
-async function verifyImage(url: string): Promise<boolean> {
-  try {
-    const res = await fetchWithTimeout(url, {
-      method: "GET",
-      // tiny range so we don't download full images during verification
-      headers: { range: "bytes=0-2047" },
-    });
     if (!res.ok) return false;
     const ct = res.headers.get("content-type") || "";
     return ct.startsWith("image/");
@@ -58,180 +23,116 @@ async function verifyImage(url: string): Promise<boolean> {
   }
 }
 
-async function verifyMany(candidates: Img[], want: number): Promise<Img[]> {
-  const out: Img[] = [];
-  const dedup = new Set<string>();
-  const queue = candidates.filter((c) => {
-    const key = stem(c.url);
-    if (dedup.has(key)) return false;
-    dedup.add(key);
-    return true;
-  });
-
-  // Gentle concurrency to be kind to remote CDNs
-  const CONCURRENCY = 4;
-  let idx = 0;
-
-  async function worker() {
-    while (out.length < want && idx < queue.length) {
-      const cand = queue[idx++];
-      // eslint-disable-next-line no-await-in-loop
-      const ok = await verifyImage(cand.url);
-      if (ok) out.push(cand);
+// ---- DuckDuckGo images (no API key). We obtain vqd and call i.js ----
+async function ddgImages(query: string, count: number): Promise<string[]> {
+  try {
+    const home = await fetch(
+      "https://duckduckgo.com/?q=" + encodeURIComponent(query),
+      { headers: { "user-agent": "Mozilla/5.0" } }
+    );
+    const html = await home.text();
+    const m = html.match(/vqd='([^']+)'/);
+    if (!m) {
+      console.log("[images:ddg] no vqd for query:", query);
+      return [];
     }
+    const vqd = m[1];
+    const api = `https://duckduckgo.com/i.js?l=us-en&o=json&q=${encodeURIComponent(
+      query
+    )}&vqd=${encodeURIComponent(vqd)}&f=,,,&p=1`;
+    const r = await fetch(api, { headers: { "user-agent": "Mozilla/5.0" } });
+    if (!r.ok) {
+      console.log("[images:ddg] i.js bad status:", r.status, query);
+      return [];
+    }
+    const j = await r.json();
+    const urls: string[] = Array.isArray(j?.results)
+      ? j.results
+          .map((x: any) => x?.image || x?.thumbnail || x?.url)
+          .filter((u: string) => typeof u === "string")
+      : [];
+    return urls.slice(0, count);
+  } catch (err: any) {
+    console.log("[images:ddg] error", err?.message || err);
+    return [];
   }
-
-  const jobs = Array.from({ length: CONCURRENCY }, () => worker());
-  await Promise.all(jobs);
-  return out.slice(0, want);
 }
 
-// --- DuckDuckGo Images ------------------------------------------------------
-
-async function getDDGVqd(query: string): Promise<string | null> {
+// ---- Wikimedia Commons search (no key) ----
+async function commonsImages(query: string, count: number): Promise<string[]> {
   try {
-    // DuckDuckGo returns a token ("vqd") in the HTML for the query
-    const html = await fetchWithTimeout(
-      `https://duckduckgo.com/?q=${encodeURIComponent(query)}&iax=images&ia=images`,
-      { headers: { "user-agent": "Mozilla/5.0" } },
-      8000
-    ).then((r) => r.text());
-
-    const m = html.match(/vqd='([\d-]+)'/);
-    return m?.[1] ?? null;
+    const api =
+      "https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=" +
+      encodeURIComponent(query) +
+      "&gsrlimit=" +
+      Math.min(count, MAX_PER_QUERY) +
+      "&prop=imageinfo&iiprop=url&format=json&origin=*";
+    const r = await fetch(api, { headers: { "user-agent": "Mozilla/5.0" } });
+    if (!r.ok) return [];
+    const j = await r.json();
+    const pages = j?.query?.pages || {};
+    const urls: string[] = Object.values(pages)
+      .map((p: any) => p?.imageinfo?.[0]?.url)
+      .filter((u: string) => typeof u === "string");
+    return urls.slice(0, count);
   } catch {
-    return null;
-  }
-}
-
-async function ddgImages(query: string, goal: number): Promise<Img[]> {
-  const token = await getDDGVqd(query);
-  if (!token) {
-    log("ddg", "missing token", { query });
-    return [];
-  }
-
-  let next = `https://duckduckgo.com/i.js?l=us-en&o=json&q=${encodeURIComponent(query)}&vqd=${token}&f=,,,&p=1`;
-  const out: Img[] = [];
-
-  for (let page = 0; page < 3 && out.length < goal * 3; page++) {
-    try {
-      const res = await fetchWithTimeout(next, { headers: { "user-agent": "Mozilla/5.0" } }, 8000);
-      if (!res.ok) break;
-      const json = await res.json();
-      const results = Array.isArray(json.results) ? json.results : [];
-      for (const r of results) {
-        const url = r?.image || r?.thumbnail || r?.url;
-        if (typeof url === "string") {
-          out.push({
-            url,
-            title: r?.title || r?.source || query,
-            source: r?.source || "duckduckgo",
-          });
-        }
-      }
-      if (typeof json.next === "string") {
-        next = `https://duckduckgo.com${json.next}`;
-      } else {
-        break;
-      }
-    } catch (e) {
-      log("ddg", "page fetch error", { page, message: (e as Error).message });
-      break;
-    }
-  }
-
-  log("ddg", "raw collected", { count: out.length, query });
-  return out;
-}
-
-// --- Wikimedia Commons fallback ---------------------------------------------
-
-async function commonsImages(query: string, want: number): Promise<Img[]> {
-  try {
-    const url =
-      "https://commons.wikimedia.org/w/api.php" +
-      `?action=query&generator=search&gsrsearch=${encodeURIComponent(
-        query
-      )}&gsrlimit=${Math.max(want * 2, 20)}&prop=imageinfo&iiprop=url&iiurlwidth=1600&format=json&origin=*`;
-
-    const res = await fetchWithTimeout(url, {}, 8000);
-    if (!res.ok) return [];
-    const json = await res.json();
-
-    const pages = json?.query?.pages || {};
-    const out: Img[] = [];
-    for (const k of Object.keys(pages)) {
-      const p = pages[k];
-      const info = Array.isArray(p?.imageinfo) ? p.imageinfo[0] : null;
-      const src = info?.thumburl || info?.url;
-      if (typeof src === "string") {
-        out.push({
-          url: src,
-          title: p?.title || query,
-          source: "wikimedia",
-        });
-      }
-    }
-    log("commons", "raw collected", { count: out.length, query });
-    return out;
-  } catch (e) {
-    log("commons", "error", { message: (e as Error).message });
     return [];
   }
 }
 
-// --- API route --------------------------------------------------------------
-
-export async function GET(req: NextRequest) {
-  const started = Date.now();
+export async function POST(req: NextRequest) {
+  const t0 = Date.now();
   try {
-    const { searchParams } = new URL(req.url);
-    const q = (searchParams.get("q") || "").trim();
-    const count = Math.max(2, Math.min(40, Number(searchParams.get("count") || "16")));
+    const body = await req.json().catch(() => ({}));
+    const queries: string[] = Array.isArray(body?.queries)
+      ? body.queries.filter(Boolean)
+      : [];
+    const count = Math.min(Number(body?.count ?? 20), MAX_PER_QUERY);
 
-    if (!q) {
-      return NextResponse.json({ images: [] }, { status: 200 });
+    if (queries.length === 0) {
+      return NextResponse.json(
+        { error: "Missing queries[]" },
+        { status: 400 }
+      );
     }
 
-    log("request", "start", { q, count });
-
-    // 1) Fetch from DDG (primary)
-    const ddg = await ddgImages(q, count);
-
-    // 2) Fallback to Wikimedia if DDG is light
-    let combined = ddg;
-    if (combined.length < count) {
-      const fallback = await commonsImages(q, count);
-      combined = combined.concat(fallback);
-    }
-
-    // Overshoot to allow for verification failures
-    shuffle(combined);
-    const overshoot = Math.max(count * 3, count + 20);
-    const candidates = combined.slice(0, overshoot);
-
-    // 3) Server-side verification (MIME/image/* via small range)
-    const verified = await verifyMany(candidates, count);
-
-    const elapsed = Date.now() - started;
-    log("response", "done", {
-      q,
-      requested: count,
-      ddg_raw: ddg.length,
-      combined_raw: combined.length,
-      verified: verified.length,
-      ms: elapsed,
+    console.log("[images:request] start", {
+      queriesCount: queries.length,
+      count,
     });
 
-    // Minimal CORS so client can call this route freely
-    const res = NextResponse.json({ images: verified }, { status: 200 });
-    res.headers.set("cache-control", "no-store");
-    res.headers.set("access-control-allow-origin", "*");
-    return res;
+    // For each query: try DDG, else Commons
+    const all: string[] = [];
+    for (const q of queries) {
+      const ddg = await ddgImages(q, count);
+      const got = ddg.length ? ddg : await commonsImages(q, count);
+      all.push(...got);
+      console.log("[images:q]", q, { ddg: ddg.length, commons: got.length });
+    }
+
+    // Dedup and verify
+    const unique = uniq(all).slice(0, 80); // cap before HEAD checks
+    const verified: string[] = [];
+    for (const u of unique) {
+      if (verified.length >= queries.length * count) break;
+      if (await headOk(u)) verified.push(u);
+    }
+
+    console.log("[images:response] done", {
+      requested: queries.length * count,
+      combined_raw: all.length,
+      verified: verified.length,
+      ms: Date.now() - t0,
+    });
+
+    return NextResponse.json({ images: verified });
   } catch (err: any) {
-    const elapsed = Date.now() - started;
-    log("fatal", "error", { message: err?.message || String(err), ms: elapsed });
-    return NextResponse.json({ images: [] }, { status: 200 });
+    console.error("[/api/images] fatal", err?.message || err);
+    return NextResponse.json(
+      { error: err?.message || "unknown" },
+      { status: 500 }
+    );
   }
 }
+
+export const runtime = "edge";
