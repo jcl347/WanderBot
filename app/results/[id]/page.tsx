@@ -9,13 +9,12 @@ import DestinationCard from "@/components/DestinationCard";
 import { mockPlan, mockDestinations } from "@/mocks/plan";
 import { q } from "@/lib/db";
 
-type PageProps = { params: Promise<{ id: string }> };
+type PageProps = { params: { id: string } };
 
 type DestRow = {
   slug: string;
   name: string;
   narrative: string;
-  // Optional JSONB columns that may or may not exist depending on model/DB
   analysis?: any | null;
   months?: Array<{ month: string; note: string }> | null;
   per_traveler_fares?: Array<{
@@ -37,13 +36,12 @@ type SummaryShape = {
 
 // Fallback centers if the model/DB didn't provide any map_center
 const FALLBACK_CENTERS: Record<string, { lat: number; lon: number }> = {
-  // originals
   lisbon: { lat: 38.7223, lon: -9.1393 },
   "mexico-city": { lat: 19.4326, lon: -99.1332 },
   montreal: { lat: 45.5017, lon: -73.5673 },
   "san-diego": { lat: 32.7157, lon: -117.1611 },
   honolulu: { lat: 21.3069, lon: -157.8583 },
-  // common US set you've been testing
+  // common US additions
   austin: { lat: 30.2672, lon: -97.7431 },
   "austin-texas": { lat: 30.2672, lon: -97.7431 },
   "las-vegas": { lat: 36.1699, lon: -115.1398 },
@@ -58,7 +56,6 @@ const FALLBACK_CENTERS: Record<string, { lat: number; lon: number }> = {
 };
 
 const CARD_COLORS = [
-  // gentle, first-page-friendly tints
   { from: "from-sky-50", to: "to-sky-100/60", chip: "bg-sky-100 text-sky-800" },
   { from: "from-teal-50", to: "to-teal-100/60", chip: "bg-teal-100 text-teal-800" },
   { from: "from-amber-50", to: "to-amber-100/60", chip: "bg-amber-100 text-amber-800" },
@@ -67,7 +64,7 @@ const CARD_COLORS = [
 ];
 
 export default async function ResultsPage({ params }: PageProps) {
-  const { id } = await params;
+  const { id } = params;
 
   const useMock =
     id === "demo" ||
@@ -97,7 +94,6 @@ export default async function ResultsPage({ params }: PageProps) {
     plan = rows?.[0];
     if (!plan) return notFound();
 
-    // Bring back the optional JSON that details & cards may use.
     const rawDests = await q<any>(
       `
       select slug, name, narrative, months, per_traveler_fares, analysis
@@ -134,7 +130,6 @@ export default async function ResultsPage({ params }: PageProps) {
     })
     .filter(Boolean) as { position: [number, number]; label: string }[];
 
-  // Reasonable initial center
   const center: [number, number] =
     markers.length ? markers[0]!.position : [30, -30];
 
@@ -147,7 +142,6 @@ export default async function ResultsPage({ params }: PageProps) {
         </Link>
       </div>
 
-      {/* Summary / Final recommendation */}
       <SectionCard>
         <h1 className="text-2xl font-semibold">Your trip plan</h1>
         <p className="mt-2 text-neutral-700 whitespace-pre-line">
@@ -155,14 +149,11 @@ export default async function ResultsPage({ params }: PageProps) {
         </p>
       </SectionCard>
 
-      {/* Cost comparison (chart renders its own legend) */}
       <SectionCard>
         <h2 className="text-lg font-semibold mb-4">Cost comparison</h2>
         <CostComparisons data={summary.destinations} />
-        {/* No extra manual legend row below the chart */}
       </SectionCard>
 
-      {/* Map with labeled pins */}
       <SectionCard>
         <h2 className="text-lg font-semibold mb-3">Trip map</h2>
         <div className="h-72 w-full">
@@ -173,7 +164,6 @@ export default async function ResultsPage({ params }: PageProps) {
         </p>
       </SectionCard>
 
-      {/* Destination cards */}
       <SectionCard>
         <h2 className="text-lg font-semibold mb-3">Destinations</h2>
         <div className="grid md:grid-cols-2 gap-3">

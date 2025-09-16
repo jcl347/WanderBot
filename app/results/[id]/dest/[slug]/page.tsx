@@ -17,13 +17,14 @@ export default async function DestDetail({ params }: PageProps) {
     process.env.MOCK === "1";
 
   if (!useMock) {
-    const [dest] = await q<any>(
+    const rows = await q<any>(
       `select slug, name, narrative, months, per_traveler_fares, analysis
-         from destinations
-        where plan_id = $1 and slug = $2
-        limit 1`,
+       from destinations
+       where plan_id = $1 and slug = $2
+       limit 1`,
       [id, slug]
     );
+    const dest = rows?.[0];
     if (!dest) return notFound();
 
     return (
@@ -39,7 +40,8 @@ export default async function DestDetail({ params }: PageProps) {
     );
   }
 
-  const dest = mockDestinationDetailBySlug[slug];
+  // mock path
+  const dest = (mockDestinationDetailBySlug as Record<string, any>)[slug];
   if (!dest) return notFound();
 
   return (
