@@ -42,37 +42,46 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     label: p.name,
   }));
 
-  // ----- Image queries -----
-  // Prefer model-provided image_queries (strings), else derive a simple pair
+  // ----- Image query lists (arrays of short phrases) -----
+  // Prefer model-provided analysis.image_queries (strings).
   const modelQueries: string[] = Array.isArray(analysis.image_queries)
     ? analysis.image_queries.filter((s: any) => typeof s === "string" && s.trim())
     : [];
 
-  // Collapse to two strings for left/right rails
-  let leftQuery = "";
-  let rightQuery = "";
+  let leftList: string[] = [];
+  let rightList: string[] = [];
 
   if (modelQueries.length) {
-    const half = Math.ceil(modelQueries.length / 2);
-    leftQuery = modelQueries.slice(0, half).join(" ");
-    rightQuery = modelQueries.slice(half).join(" ");
+    const mid = Math.ceil(modelQueries.length / 2);
+    leftList = modelQueries.slice(0, mid);
+    rightList = modelQueries.slice(mid);
   } else {
-    // Safe fallback based on name + notable markers + a few generic travel tropes
+    // Fallback to simple, short phrases
     const markerNames: string[] = (analysis.map_markers || [])
       .map((m: any) => (typeof m?.name === "string" ? m.name : ""))
       .filter(Boolean);
-    leftQuery = [dest.name, "landmarks sights skyline", markerNames.slice(0, 4).join(" ")].join(
-      " "
-    );
-    rightQuery = [dest.name, "food nightlife market music shopping"].join(" ");
+
+    leftList = [
+      `${dest.name} landmarks`,
+      `${dest.name} skyline`,
+      ...markerNames.slice(0, 4),
+    ].filter(Boolean);
+
+    rightList = [
+      `${dest.name} food`,
+      `${dest.name} nightlife`,
+      `${dest.name} market`,
+      `${dest.name} music`,
+      `${dest.name} shopping`,
+    ];
   }
 
   return (
     <>
-      {/* Photo rails */}
+      {/* Photo rails (arrays of phrases) */}
       <LiveCollage
-        leftQuery={leftQuery}
-        rightQuery={rightQuery}
+        leftList={leftList}
+        rightList={rightList}
         leftCount={10}
         rightCount={10}
       />
