@@ -186,7 +186,7 @@ function normalizePerTravelerFares(
   // Already valid array?
   if (Array.isArray(ptf)) {
     return ptf
-      .map((x) => {
+      .map((x: unknown) => {
         const t = x as any;
         if (t && typeof t === "object" && typeof t.travelerName === "string") {
           const from =
@@ -204,15 +204,18 @@ function normalizePerTravelerFares(
               from,
               avgUSD: avg,
               monthBreakdown: Array.isArray(t.monthBreakdown)
-                ? t.monthBreakdown
-                    .map((m) =>
-                      m &&
-                      typeof m === "object" &&
-                      typeof (m as any).month === "string" &&
-                      Number.isFinite(Number((m as any).avgUSD))
-                        ? { month: (m as any).month, avgUSD: Number((m as any).avgUSD) }
-                        : null
-                    )
+                ? (t.monthBreakdown as unknown[])
+                    .map((m: unknown) => {
+                      const mm = m as any;
+                      return (
+                        mm &&
+                        typeof mm === "object" &&
+                        typeof mm.month === "string" &&
+                        Number.isFinite(Number(mm.avgUSD))
+                      )
+                        ? { month: mm.month, avgUSD: Number(mm.avgUSD) }
+                        : null;
+                    })
                     .filter(Boolean) as { month: string; avgUSD: number }[]
                 : undefined,
             };
@@ -239,17 +242,20 @@ function normalizePerTravelerFares(
         travelerName: key,
         from: match?.homeLocation || "UNKNOWN",
         avgUSD: Number(avg),
-        monthBreakdown: Array.isArray(val?.monthBreakdown)
-          ? val.monthBreakdown
-              .map((m: any) =>
-                m &&
-                typeof m === "object" &&
-                typeof m.month === "string" &&
-                Number.isFinite(Number(m.avgUSD))
-                  ? { month: m.month, avgUSD: Number(m.avgUSD) }
-                  : null
-              )
-              .filter(Boolean)
+        monthBreakdown: Array.isArray((val as any)?.monthBreakdown)
+          ? ((val as any).monthBreakdown as unknown[])
+              .map((m: unknown) => {
+                const mm = m as any;
+                return (
+                  mm &&
+                  typeof mm === "object" &&
+                  typeof mm.month === "string" &&
+                  Number.isFinite(Number(mm.avgUSD))
+                )
+                  ? { month: mm.month, avgUSD: Number(mm.avgUSD) }
+                  : null;
+              })
+              .filter(Boolean) as { month: string; avgUSD: number }[]
           : undefined,
       });
     }
@@ -264,8 +270,8 @@ function normalizeMonths(
   fallbackMonth: string
 ): { month: string; note: string }[] | undefined {
   if (Array.isArray(months)) {
-    const arr = months
-      .map((m) => {
+    const arr = (months as unknown[])
+      .map((m: unknown) => {
         const x = m as any;
         if (x && typeof x === "object" && typeof x.month === "string" && typeof x.note === "string") {
           return { month: x.month, note: x.note };
