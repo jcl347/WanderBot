@@ -10,7 +10,7 @@ import LiveCollage from "./LiveCollage";
 export default function DestDetailClient({ dest }: { dest: any }) {
   const fares = dest.per_traveler_fares ?? [];
 
-  // Build chart months
+  // ----- Build chart months -----
   const monthSet = new Set<string>();
   fares.forEach((f: any) =>
     f.monthBreakdown?.forEach((m: any) => monthSet.add(m.month))
@@ -34,7 +34,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     return row;
   });
 
-  // Map bits
+  // ----- Map bits -----
   const analysis = dest.analysis ?? {};
   const center = analysis.map_center ?? dest.map_center ?? { lat: 40, lon: -20 };
   const markers = (analysis.map_markers ?? []).map((p: any) => ({
@@ -42,25 +42,29 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     label: p.name,
   }));
 
-  // Image queries — prefer model-provided
+  // ----- Image queries (prefer model-provided) -----
   const queries: string[] = Array.isArray(analysis.image_queries)
     ? analysis.image_queries.filter((s: any) => typeof s === "string" && s.trim())
     : [];
 
-  // Split evenly for left/right rails
+  // Split and collapse to two concise query strings for LiveCollage props
   const half = Math.ceil(queries.length / 2);
   const leftList = queries.slice(0, half);
   const rightList = queries.slice(half);
+  const leftQuery = leftList.join(" ");
+  const rightQuery = rightList.join(" ");
 
   return (
     <>
+      {/* Live photo rails (expects string queries) */}
       <LiveCollage
-        leftList={leftList}
-        rightList={rightList}
+        leftQuery={leftQuery}
+        rightQuery={rightQuery}
         leftCount={10}
         rightCount={10}
       />
 
+      {/* Main content column */}
       <div className="md:col-start-2 md:row-start-1 md:px-0 space-y-4">
         <SectionCard>
           <h1 className="text-2xl font-semibold">{dest.name}</h1>
