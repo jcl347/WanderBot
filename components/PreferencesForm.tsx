@@ -3,6 +3,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import LoadingRobot from "./LoadingRobot"; // 👈 use your existing robot
 
 type Traveler = {
   id: string;
@@ -261,7 +262,7 @@ export default function PreferencesForm({
         </div>
 
         {/* Submit */}
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col items-center gap-3">
           <button
             type="submit"
             className="rounded bg-pink-600 text-white px-4 py-2 disabled:opacity-50"
@@ -269,6 +270,7 @@ export default function PreferencesForm({
           >
             {saving ? "Planning…" : "Save & Generate Plan"}
           </button>
+          {saving && <LoadingRobot />} {/* 👈 shows while the plan is generating */}
         </div>
       </form>
     </section>
