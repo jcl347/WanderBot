@@ -42,21 +42,34 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     label: p.name,
   }));
 
-  // ----- Image queries (prefer model-provided) -----
-  const queries: string[] = Array.isArray(analysis.image_queries)
+  // ----- Image queries -----
+  // Prefer model-provided image_queries (strings), else derive a simple pair
+  const modelQueries: string[] = Array.isArray(analysis.image_queries)
     ? analysis.image_queries.filter((s: any) => typeof s === "string" && s.trim())
     : [];
 
-  // Split and collapse to two concise query strings for LiveCollage props
-  const half = Math.ceil(queries.length / 2);
-  const leftList = queries.slice(0, half);
-  const rightList = queries.slice(half);
-  const leftQuery = leftList.join(" ");
-  const rightQuery = rightList.join(" ");
+  // Collapse to two strings for left/right rails
+  let leftQuery = "";
+  let rightQuery = "";
+
+  if (modelQueries.length) {
+    const half = Math.ceil(modelQueries.length / 2);
+    leftQuery = modelQueries.slice(0, half).join(" ");
+    rightQuery = modelQueries.slice(half).join(" ");
+  } else {
+    // Safe fallback based on name + notable markers + a few generic travel tropes
+    const markerNames: string[] = (analysis.map_markers || [])
+      .map((m: any) => (typeof m?.name === "string" ? m.name : ""))
+      .filter(Boolean);
+    leftQuery = [dest.name, "landmarks sights skyline", markerNames.slice(0, 4).join(" ")].join(
+      " "
+    );
+    rightQuery = [dest.name, "food nightlife market music shopping"].join(" ");
+  }
 
   return (
     <>
-      {/* Live photo rails (expects string queries) */}
+      {/* Photo rails */}
       <LiveCollage
         leftQuery={leftQuery}
         rightQuery={rightQuery}
@@ -64,7 +77,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
         rightCount={10}
       />
 
-      {/* Main content column */}
+      {/* Middle analytics/content column */}
       <div className="md:col-start-2 md:row-start-1 md:px-0 space-y-4">
         <SectionCard>
           <h1 className="text-2xl font-semibold">{dest.name}</h1>
