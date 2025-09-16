@@ -12,31 +12,31 @@ import { q } from "@/lib/db";
 
 type PageProps = { params: Promise<{ id: string }> };
 
-// ---- canonical destination list shape used by the UI
-type ListDest = {
+type DestRow = {
   slug: string;
   name: string;
   narrative: string;
-  analysis: Record<string, any>; // always an object (never undefined/null)
-  map_center?: { lat: number; lon: number } | null;
-  per_traveler_fares: Array<{
+  // Optional JSONB columns that may or may not exist depending on model/DB
+  analysis?: any | null;
+  months?: Array<{ month: string; note: string }> | null;
+  per_traveler_fares?: Array<{
     travelerName: string;
     from: string;
     avgUSD: number;
-    monthBreakdown?: { month: string; avgUSD: number }[];
-  }>;
+    monthBreakdown?: Array<{ month: string; avgUSD: number }>;
+  }> | null;
 };
 
-// ---- DB row shape returned by SQL (normalized with COALESCE)
-type DbRow = {
-  slug: string;
-  name: string;
-  narrative: string;
-  analysis: Record<string, any>;
-  per_traveler_fares: ListDest["per_traveler_fares"];
+type SummaryShape = {
+  destinations: {
+    name: string;
+    slug: string;
+    totalGroupUSD: number;
+    avgPerPersonUSD: number;
+  }[];
 };
 
-// fallback lat/lon for demo slugs if model/DB didn’t provide map_center
+// Fallback centers if the model/DB didn't provide any map_center
 const FALLBACK_CENTERS: Record<string, { lat: number; lon: number }> = {
   lisbon: { lat: 38.7223, lon: -9.1393 },
   "mexico-city": { lat: 19.4326, lon: -99.1332 },
@@ -45,13 +45,13 @@ const FALLBACK_CENTERS: Record<string, { lat: number; lon: number }> = {
   honolulu: { lat: 21.3069, lon: -157.8583 },
 };
 
-// soft brand palette variants (slightly toned to match home page)
-const CARD_TINTS = [
-  { bg: "bg-sky-50/80", ring: "ring-sky-200", chip: "bg-sky-200/70" },
-  { bg: "bg-emerald-50/80", ring: "ring-emerald-200", chip: "bg-emerald-200/70" },
-  { bg: "bg-indigo-50/80", ring: "ring-indigo-200", chip: "bg-indigo-200/70" },
-  { bg: "bg-amber-50/80", ring: "ring-amber-200", chip: "bg-amber-200/70" },
-  { bg: "bg-rose-50/80", ring: "ring-rose-200", chip: "bg-rose-200/70" },
+const CARD_COLORS = [
+  // gentle, first-page-friendly tints
+  { from: "from-sky-50", to: "to-sky-100/60", chip: "bg-sky-100 text-sky-800" },
+  { from: "from-teal-50", to: "to-teal-100/60", chip: "bg-teal-100 text-teal-800" },
+  { from: "from-amber-50", to: "to-amber-100/60", chip: "bg-amber-100 text-amber-800" },
+  { from: "from-rose-50", to: "to-rose-100/60", chip: "bg-rose-100 text-rose-800" },
+  { from: "from-violet-50", to: "to-violet-100/60", chip: "bg-violet-100 text-violet-800" },
 ];
 
 export default async function ResultsPage({ params }: PageProps) {
@@ -62,80 +62,69 @@ export default async function ResultsPage({ params }: PageProps) {
     process.env.NEXT_PUBLIC_MOCK === "1" ||
     process.env.MOCK === "1";
 
+  // --- Load plan + destinations ---
   let plan: any;
-  let dests: ListDest[] = [];
+  let dests: DestRow[] = [];
 
   if (useMock) {
-    // demo path
     plan = {
       id: "demo",
       final_recommendation: mockPlan.final_recommendation,
       summary: mockPlan.summary,
     };
-
-    dests = mockDestinations.map<ListDest>((d) => ({
+    dests = mockDestinations.map((d) => ({
       slug: d.slug,
       name: d.name,
       narrative: d.narrative,
-      analysis: (d as any).analysis ?? {},
-      map_center: FALLBACK_CENTERS[d.slug as keyof typeof FALLBACK_CENTERS] ?? null,
-      per_traveler_fares: (d as any).per_traveler_fares ?? [],
+      analysis: d, // mock carries map_center, etc.
+      months: (d as any).months ?? null,
+      per_traveler_fares: (d as any).per_traveler_fares ?? null,
     }));
   } else {
-    // fetch plan
     const rows = await q<any>("select * from plans where id = $1", [id]);
     plan = rows?.[0];
     if (!plan) return notFound();
 
-    // fetch destinations; COALESCE -> types are stable
-    const rawDests = (await q<DbRow>(
+    // Bring back the optional JSON that details & cards may use.
+    const rawDests = await q<any>(
       `
-      select
-        slug,
-        name,
-        narrative,
-        coalesce(analysis, '{}'::jsonb) as analysis,
-        coalesce(per_traveler_fares, '[]'::jsonb) as per_traveler_fares
+      select slug, name, narrative, months, per_traveler_fares, analysis
       from destinations
       where plan_id = $1
       order by name asc
       `,
       [id]
-    )) as DbRow[];
+    );
 
-    dests = rawDests.map<ListDest>((d: DbRow) => ({
+    dests = rawDests.map((d: any) => ({
       slug: d.slug,
       name: d.name,
       narrative: d.narrative,
-      analysis: d.analysis, // guaranteed object
-      map_center: d.analysis?.map_center ?? null,
-      per_traveler_fares: d.per_traveler_fares ?? [],
+      months: d.months ?? null,
+      per_traveler_fares: d.per_traveler_fares ?? null,
+      analysis: d.analysis ?? null,
     }));
   }
 
-  const summary = plan.summary as {
-    destinations: {
-      name: string;
-      slug: string;
-      totalGroupUSD: number;
-      avgPerPersonUSD: number;
-    }[];
-  };
+  const summary = (plan.summary ?? { destinations: [] }) as SummaryShape;
 
-  // map markers
+  // --- Build map markers with names + coordinates in label ---
   const markers = dests
     .map((d) => {
       const mc =
-        d.map_center ??
-        FALLBACK_CENTERS[d.slug as keyof typeof FALLBACK_CENTERS];
-      if (!mc) return null;
-      return { position: [mc.lat, mc.lon] as [number, number], label: d.name };
+        d.analysis?.map_center ||
+        (FALLBACK_CENTERS as any)[d.slug] ||
+        null;
+      if (!mc || typeof mc.lat !== "number" || typeof mc.lon !== "number") return null;
+
+      const label = `${d.name} (${mc.lat.toFixed(2)}, ${mc.lon.toFixed(2)})`;
+      return { position: [mc.lat, mc.lon] as [number, number], label };
     })
     .filter(Boolean) as { position: [number, number]; label: string }[];
 
-  // reasonable default center
+  // Reasonable initial center
   const center: [number, number] =
-    markers.length > 0 ? markers[0]!.position : [30, -30];
+    markers.length ? markers[0]!.position : [30, -30];
 
   return (
     <BackgroundMap>
@@ -146,6 +135,7 @@ export default async function ResultsPage({ params }: PageProps) {
         </Link>
       </div>
 
+      {/* Summary / Final recommendation */}
       <SectionCard>
         <h1 className="text-2xl font-semibold">Your trip plan</h1>
         <p className="mt-2 text-neutral-700 whitespace-pre-line">
@@ -153,27 +143,14 @@ export default async function ResultsPage({ params }: PageProps) {
         </p>
       </SectionCard>
 
+      {/* Cost comparison (chart renders its own legend) */}
       <SectionCard>
         <h2 className="text-lg font-semibold mb-4">Cost comparison</h2>
         <CostComparisons data={summary.destinations} />
-        {/* brand-tinted legend chips */}
-        <div className="mt-4 flex flex-wrap gap-2">
-          {summary.destinations.map((d, i) => {
-            const tint = CARD_TINTS[i % CARD_TINTS.length];
-            return (
-              <span
-                key={d.slug}
-                className={`inline-flex items-center gap-2 rounded-full ${tint.chip} ring-1 ${tint.ring} px-3 py-1 text-xs`}
-                title={`${d.name}: group $${d.totalGroupUSD.toLocaleString()}, per person $${d.avgPerPersonUSD.toLocaleString()}`}
-              >
-                <span className="h-2 w-2 rounded-full bg-black/70" />
-                {d.name}
-              </span>
-            );
-          })}
-        </div>
+        {/* 🔧 Removed the extra “chips” row that duplicated labels under the chart */}
       </SectionCard>
 
+      {/* Map with labeled pins */}
       <SectionCard>
         <h2 className="text-lg font-semibold mb-3">Trip map</h2>
         <div className="h-72 w-full">
@@ -184,18 +161,26 @@ export default async function ResultsPage({ params }: PageProps) {
         </p>
       </SectionCard>
 
+      {/* Destination cards */}
       <SectionCard>
         <h2 className="text-lg font-semibold mb-3">Destinations</h2>
         <div className="grid md:grid-cols-2 gap-3">
-          {dests.map((d, idx) => {
-            const tint = CARD_TINTS[idx % CARD_TINTS.length];
+          {dests.map((d, i) => {
+            // Keep card palette gentle and consistent with the home page
+            const c = CARD_COLORS[i % CARD_COLORS.length];
             return (
               <div
                 key={d.slug}
-                className={`rounded-2xl ${tint.bg} ring-1 ${tint.ring} p-0.5`}
+                className={`rounded-2xl border p-0 bg-gradient-to-br ${c.from} ${c.to} shadow-sm hover:shadow-md transition-shadow`}
               >
                 <DestinationCard
-                  dest={d}
+                  dest={{
+                    // Only pass primitives/arrays that DestinationCard expects
+                    slug: d.slug,
+                    name: d.name,
+                    narrative: d.narrative,
+                    analysis: d.analysis ?? undefined, // may include highlights/best_month/etc.
+                  }}
                   href={`/results/${useMock ? "demo" : id}/dest/${d.slug}`}
                 />
               </div>
