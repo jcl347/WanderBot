@@ -1,15 +1,12 @@
-import { Pool } from "pg";
+// lib/db.ts
+import "server-only";
+import { sql } from "@vercel/postgres";
 
-// prefer POSTGRES_URL; fallback to DATABASE_URL if you ever need it
-const connectionString =
-  process.env.POSTGRES_URL || process.env.DATABASE_URL || "";
-
-export const pool = new Pool({
-  connectionString,
-  ssl: connectionString.includes("neon.tech") ? { rejectUnauthorized: false } : undefined,
-});
-
-export async function q<T=any>(sql: string, params: any[] = []) {
-  const { rows } = await pool.query(sql, params);
-  return rows as T[];
+// Simple wrapper matching your current q() usage
+export async function q<T = any>(query: string, params: any[] = []): Promise<T[]> {
+  const res = await sql.query<T>(query, params);
+  // @ts-ignore – sql.query<T> has imperfect typing, rows is correct
+  return res.rows as T[];
 }
+
+export { sql };
