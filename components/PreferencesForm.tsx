@@ -1,278 +1,564 @@
-// components/PreferencesForm.tsx
-"use client";
+// app/api/plan/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+import { q } from "@/lib/db";
+import OpenAI from "openai";
+import { parse as partialJsonParse } from "partial-json";
 
-import { useState } from "react";
-import { useRouter } from "next/navigation";
-import LoadingRobot from "./LoadingRobot"; // 👈 use your existing robot
+export const runtime = "nodejs"; // 'pg' requires node runtime
 
-type Traveler = {
-  id: string;
-  name: string;
-  relationship?: string;
-  homeLocation: string;
-  age?: string;
-  gender?: string;
-  personality?: string;
-  isUser?: boolean;
-  spouse?: string;
-  kids?: string;
-};
+// ------------ helpers ------------
+const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
-export default function PreferencesForm({
-  onPlanningChange,
-}: {
-  onPlanningChange?: (v: boolean) => void;
-}) {
-  const router = useRouter();
+// stringify + null-safe
+const toJsonb = (v: unknown) => JSON.stringify(v ?? null);
 
-  // Lint-safe UUID without ts-ignore
-  function safeUuid(): string {
-    const c: unknown = (globalThis as unknown as { crypto?: { randomUUID?: () => string } }).crypto;
-    if (c && typeof (c as any).randomUUID === "function") {
-      return (c as any).randomUUID();
-    }
-    // RFC4122-ish fallback
-    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (ch) => {
-      const r = (Math.random() * 16) | 0;
-      const v = ch === "x" ? r : (r & 0x3) | 0x8;
-      return v.toString(16);
-    });
-  }
+// safe log head
+const short = (s: string, n = 500) =>
+  (s || "").slice(0, n) + ((s || "").length > n ? " …[truncated]" : "");
 
-  function emptyTraveler(initial?: Partial<Traveler>): Traveler {
-    return {
-      id: safeUuid(),
-      name: "",
-      relationship: "",
-      homeLocation: "",
-      age: "",
-      gender: "",
-      personality: "",
-      isUser: false,
-      spouse: "",
-      kids: "",
-      ...initial,
-    };
-  }
+// slugify
+const slugify = (s: string) =>
+  s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
 
-  const [travelers, setTravelers] = useState<Traveler[]>([
-    emptyTraveler({ isUser: true, relationship: "me" }),
-  ]);
-  const [startMonth, setStartMonth] = useState<string>("");
-  const [endMonth, setEndMonth] = useState<string>("");
-  const [suggestions, setSuggestions] = useState<string>("");
-  const [saving, setSaving] = useState(false);
+// ------------ input validation ------------
+const Traveler = z.object({
+  id: z.string(),
+  name: z.string(),
+  relationship: z.string().optional(),
+  homeLocation: z.string(),
+  age: z.string().optional(),
+  gender: z.string().optional(),
+  personality: z.string().optional(),
+  isUser: z.boolean().optional(),
+  spouse: z.string().optional(),
+  kids: z.string().optional(),
+});
 
-  function updateTraveler(id: string, patch: Partial<Traveler>) {
-    setTravelers((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
-  }
-  function addTraveler() {
-    setTravelers((prev) => [...prev, emptyTraveler()]);
-  }
-  function removeTraveler(id: string) {
-    setTravelers((prev) => prev.filter((t) => t.id !== id));
-  }
+const Body = z.object({
+  travelers: z.array(Traveler).min(1),
+  timeframe: z.object({ startMonth: z.string(), endMonth: z.string() }),
+  suggestions: z.string().optional(),
+});
 
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
+// ------------ model output validation (strict target) ------------
+const DestFare = z.object({
+  travelerName: z.string(),
+  from: z.string(),
+  avgUSD: z.number(),
+  monthBreakdown: z
+    .array(z.object({ month: z.string(), avgUSD: z.number() }))
+    .optional(),
+});
 
-    if (!startMonth || !endMonth) {
-      alert("Please select a start and end month.");
-      return;
-    }
-    if (travelers.some((t) => !t.name || !t.homeLocation)) {
-      alert("Each traveler needs at least a name and home location.");
-      return;
-    }
+const DestSchema = z.object({
+  name: z.string(),
+  slug: z.string(),
+  narrative: z.string(),
+  months: z
+    .array(z.object({ month: z.string(), note: z.string() }))
+    .optional(),
+  per_traveler_fares: z.array(DestFare),
 
-    setSaving(true);
-    onPlanningChange?.(true);
-    try {
-      const res = await fetch("/api/plan", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          travelers,
-          timeframe: { startMonth, endMonth },
-          suggestions,
-        }),
-      });
+  // optional enrichments (kept inside analysis for now)
+  suggested_month: z.string().optional(),
+  seasonal_warnings: z
+    .array(z.object({ month: z.string(), note: z.string() }))
+    .optional(),
+  satisfies: z
+    .array(z.object({ travelerName: z.string(), reason: z.string() }))
+    .optional(),
+  analytics: z
+    .object({
+      avgUSD: z.number().optional(),
+      varianceUSD: z.number().optional(),
+      cheapestMonth: z.string().optional(),
+      mostExpensiveMonth: z.string().optional(),
+    })
+    .optional(),
+  map_center: z.object({ lat: z.number(), lon: z.number() }).optional(),
+  map_markers: z
+    .array(
+      z.object({
+        name: z.string(),
+        position: z.tuple([z.number(), z.number()]),
+        blurb: z.string().optional(),
+      })
+    )
+    .optional(),
+});
 
-      if (!res.ok) {
-        const msg = await res.text();
-        throw new Error(msg || "Planning failed");
-      }
+const PlanSchema = z.object({
+  final_recommendation: z.string(),
+  group_fit: z
+    .object({
+      summary: z.string(),
+      priorities: z.array(z.string()).optional(),
+      tradeoffs: z.array(z.string()).optional(),
+    })
+    .optional(),
+  destinations: z.array(DestSchema).length(5),
+});
 
-      const { planId } = await res.json();
-      router.push(`/results/${planId}`);
-    } catch (err: any) {
-      alert(err?.message || "Planning failed");
-      setSaving(false);
-      onPlanningChange?.(false);
-    }
-  }
-
-  return (
-    <section className="rounded-xl border bg-white p-4 md:p-6 space-y-6">
-      <div>
-        <h2 className="text-lg font-semibold">Group details</h2>
-        <p className="text-sm text-neutral-500">
-          Add everyone going on the trip. For any traveler who <em>dislikes travel</em>, include that phrase in their
-          personality — the planner will try to center the search near their home.
-        </p>
-      </div>
-
-      <form onSubmit={onSubmit} className="space-y-6">
-        {/* Travelers list */}
-        <div className="space-y-4">
-          {travelers.map((t, idx) => (
-            <div key={t.id} className="rounded-lg border p-4 space-y-3 bg-white/95">
-              <div className="flex items-center justify-between">
-                <div className="text-sm font-medium">
-                  Person {idx + 1} {t.isUser && <span className="ml-1 text-xs text-pink-600">(you)</span>}
-                </div>
-                {travelers.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => removeTraveler(t.id)}
-                    className="text-xs text-neutral-600 hover:text-red-600"
-                  >
-                    Remove
-                  </button>
-                )}
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <input
-                  className="border rounded px-3 py-2"
-                  placeholder="Full name"
-                  value={t.name}
-                  onChange={(e) => updateTraveler(t.id, { name: e.target.value })}
-                />
-                <input
-                  className="border rounded px-3 py-2"
-                  placeholder='Relationship (e.g., "me", spouse, friend, parent)'
-                  value={t.relationship ?? ""}
-                  onChange={(e) => updateTraveler(t.id, { relationship: e.target.value })}
-                />
-                <input
-                  className="border rounded px-3 py-2"
-                  placeholder='Home location (e.g., "LAX" or "Seattle, WA")'
-                  value={t.homeLocation}
-                  onChange={(e) => updateTraveler(t.id, { homeLocation: e.target.value.toUpperCase() })}
-                />
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-                <input
-                  className="border rounded px-3 py-2"
-                  placeholder="Age"
-                  value={t.age ?? ""}
-                  onChange={(e) => updateTraveler(t.id, { age: e.target.value })}
-                />
-                <input
-                  className="border rounded px-3 py-2"
-                  placeholder="Gender"
-                  value={t.gender ?? ""}
-                  onChange={(e) => updateTraveler(t.id, { gender: e.target.value })}
-                />
-                <input
-                  className="border rounded px-3 py-2"
-                  placeholder="Spouse name (optional)"
-                  value={t.spouse ?? ""}
-                  onChange={(e) => updateTraveler(t.id, { spouse: e.target.value })}
-                />
-                <input
-                  className="border rounded px-3 py-2"
-                  placeholder="Number of kids"
-                  inputMode="numeric"
-                  value={t.kids ?? ""}
-                  onChange={(e) => updateTraveler(t.id, { kids: e.target.value.replace(/[^\d]/g, "") })}
-                />
-              </div>
-
-              <textarea
-                className="w-full border rounded px-3 py-2"
-                placeholder='Short personality notes (e.g., "dislikes travel", "foodie, loves beaches")'
-                value={t.personality ?? ""}
-                onChange={(e) => updateTraveler(t.id, { personality: e.target.value })}
-              />
-
-              <label className="inline-flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={t.isUser ?? false}
-                  onChange={(e) => updateTraveler(t.id, { isUser: e.target.checked })}
-                />
-                This person is me
-              </label>
-            </div>
-          ))}
-
-          <button
-            type="button"
-            onClick={addTraveler}
-            className="rounded-md border px-3 py-2 text-sm hover:bg-neutral-50"
-          >
-            + Add another person
-          </button>
-        </div>
-
-        {/* Timeframe */}
-        <div className="space-y-2">
-          <h3 className="text-base font-medium">Target timeframe (required)</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs text-neutral-500 mb-1">Start month</label>
-              <input
-                type="month"
-                className="border rounded px-3 py-2 w-full"
-                value={startMonth}
-                onChange={(e) => setStartMonth(e.target.value)}
-                required
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-neutral-500 mb-1">End month</label>
-              <input
-                type="month"
-                className="border rounded px-3 py-2 w-full"
-                value={endMonth}
-                onChange={(e) => setEndMonth(e.target.value)}
-                required
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Seed ideas / suggestions */}
-        <div className="space-y-2">
-          <h3 className="text-base font-medium">Any ideas or must-haves?</h3>
-          <textarea
-            className="w-full border rounded px-3 py-2"
-            rows={3}
-            placeholder="Optional: list a few destination ideas, activities, or constraints (school schedule, mobility, etc.)"
-            value={suggestions}
-            onChange={(e) => setSuggestions(e.target.value)}
-          />
-          <p className="text-xs text-neutral-500">
-            We’ll ask the planner to propose 5 locations, estimate flight costs per traveler and per month,
-            and choose a best overall recommendation for the group.
-          </p>
-        </div>
-
-        {/* Submit */}
-        <div className="flex flex-col items-center gap-3">
-          <button
-            type="submit"
-            className="rounded bg-pink-600 text-white px-4 py-2 disabled:opacity-50"
-            disabled={saving}
-          >
-            {saving ? "Planning…" : "Save & Generate Plan"}
-          </button>
-          {saving && <LoadingRobot />} {/* 👈 shows while the plan is generating */}
-        </div>
-      </form>
-    </section>
+// ------------ prompt ------------
+function buildPrompt(input: z.infer<typeof Body>) {
+  const { travelers, timeframe, suggestions } = input;
+  const dislikes = travelers.find((t) =>
+    (t.personality || "").toLowerCase().includes("dislikes travel")
   );
+  const anchor = dislikes?.homeLocation ?? "none";
+
+  const tableHeader =
+    "| Name | Me? | Relation | Home | Spouse | Kids | Personality |\n|---|---|---|---|---|---|---|\n";
+  const rows = travelers
+    .map(
+      (t) =>
+        `| ${t.name} | ${t.isUser ? "✅" : ""} | ${t.relationship ?? "—"} | ${
+          t.homeLocation
+        } | ${t.spouse ?? "—"} | ${t.kids ?? "0"} | ${(
+          t.personality ?? ""
+        ).replaceAll("|", "/")} |`
+    )
+    .join("\n");
+
+  // Mini example shows the exact shape we expect
+  const example = `
+EXAMPLE DESTINATION (shape only, values illustrative):
+{
+  "name": "Los Angeles",
+  "slug": "los-angeles",
+  "narrative": "Why it's good for this group…",
+  "months": [
+    { "month": "${timeframe.startMonth}", "note": "Mild weather; shoulder season" }
+  ],
+  "per_traveler_fares": [
+    { "travelerName": "${travelers[0].name}", "from": "${travelers[0].homeLocation}", "avgUSD": 350 }
+  ],
+  "suggested_month": "${timeframe.startMonth}",
+  "seasonal_warnings": [{ "month": "${timeframe.endMonth}", "note": "Peak heat / crowds" }],
+  "satisfies": [{ "travelerName": "${travelers[0].name}", "reason": "Beach + resorts" }],
+  "analytics": { "avgUSD": 400, "varianceUSD": 80, "cheapestMonth": "${timeframe.startMonth}", "mostExpensiveMonth": "${timeframe.endMonth}" },
+  "map_center": { "lat": 34.0522, "lon": -118.2437 },
+  "map_markers": [
+    { "name": "Santa Monica Pier", "position": [34.0101, -118.4965], "blurb": "Iconic pier" }
+  ]
+}
+`.trim();
+
+  return `
+You're a travel analyst for indecisive group trips. Produce **exactly 5 destinations** with opinionated reasoning and airfare estimates. Output **strict JSON**.
+
+TRAVELERS
+${tableHeader}${rows}
+
+TIMEFRAME: ${timeframe.startMonth} → ${timeframe.endMonth}
+USER IDEAS: ${suggestions?.trim() || "none"}
+
+Rules:
+- If ANY traveler includes the phrase "dislikes travel", **center the trip near their home** (${anchor}).
+- Otherwise, **minimize total group flight cost** while balancing interests (families, kids, mobility, vibes).
+- For each destination:
+  • "name" (string) and "slug" (kebab-case)
+  • "narrative": WHY it fits the group (+ a tiny 2–3 bullet micro-itinerary inside the prose)
+  • "per_traveler_fares": ARRAY of { travelerName, from, avgUSD, monthBreakdown? }
+    - Do NOT return an object map; it MUST be an array.
+  • "months": ARRAY of { month: "YYYY-MM", note: string }
+  • OPTIONAL enrichments: "satisfies", "suggested_month", "seasonal_warnings", "analytics", "map_center", "map_markers"
+- Provide "final_recommendation": one strong pick & why (cost + fit + tradeoffs).
+- Provide optional "group_fit": { summary, priorities[], tradeoffs[] }.
+
+Return JSON like:
+{
+  "final_recommendation": "…",
+  "group_fit": { "summary": "…", "priorities": ["…"], "tradeoffs": ["…"] },
+  "destinations": [ ${example} , ... x5 total ]
+}
+`.trim();
+}
+
+// ------------ normalizers for sloppy model output ------------
+type Travelers = z.infer<typeof Body>["travelers"];
+function normalizePerTravelerFares(
+  ptf: unknown,
+  travelers: Travelers
+): Array<z.infer<typeof DestFare>> {
+  // Already valid array?
+  if (Array.isArray(ptf)) {
+    return ptf
+      .map((x: unknown) => {
+        const t = x as any;
+        if (t && typeof t === "object" && typeof t.travelerName === "string") {
+          const from =
+            typeof t.from === "string"
+              ? t.from
+              : travelers.find(
+                  (tr) =>
+                    tr.name.trim().toLowerCase() ===
+                    t.travelerName.trim().toLowerCase()
+                )?.homeLocation || "UNKNOWN";
+          const avg = Number(t.avgUSD);
+          if (Number.isFinite(avg)) {
+            return {
+              travelerName: t.travelerName,
+              from,
+              avgUSD: avg,
+              monthBreakdown: Array.isArray(t.monthBreakdown)
+                ? (t.monthBreakdown as unknown[])
+                    .map((m: unknown) => {
+                      const mm = m as any;
+                      return (
+                        mm &&
+                        typeof mm === "object" &&
+                        typeof mm.month === "string" &&
+                        Number.isFinite(Number(mm.avgUSD))
+                      )
+                        ? { month: mm.month, avgUSD: Number(mm.avgUSD) }
+                        : null;
+                    })
+                    .filter(Boolean) as { month: string; avgUSD: number }[]
+                : undefined,
+            };
+          }
+        }
+        return null;
+      })
+      .filter(Boolean) as Array<z.infer<typeof DestFare>>;
+  }
+
+  // Object map form: { "Jordan": 150, "Alice": 150 } OR nested objects
+  if (ptf && typeof ptf === "object") {
+    const out: Array<z.infer<typeof DestFare>> = [];
+    for (const [key, val] of Object.entries(ptf as Record<string, any>)) {
+      const avg =
+        typeof val === "number"
+          ? val
+          : Number(val?.avgUSD ?? val?.price ?? val); // best-effort extraction
+      if (!Number.isFinite(avg)) continue;
+      const match = travelers.find(
+        (t) => t.name.trim().toLowerCase() === key.trim().toLowerCase()
+      );
+      out.push({
+        travelerName: key,
+        from: match?.homeLocation || "UNKNOWN",
+        avgUSD: Number(avg),
+        monthBreakdown: Array.isArray((val as any)?.monthBreakdown)
+          ? ((val as any).monthBreakdown as unknown[])
+              .map((m: unknown) => {
+                const mm = m as any;
+                return (
+                  mm &&
+                  typeof mm === "object" &&
+                  typeof mm.month === "string" &&
+                  Number.isFinite(Number(mm.avgUSD))
+                )
+                  ? { month: mm.month, avgUSD: Number(mm.avgUSD) }
+                  : null;
+              })
+              .filter(Boolean) as { month: string; avgUSD: number }[]
+          : undefined,
+      });
+    }
+    return out;
+  }
+
+  return [];
+}
+
+function normalizeMonths(
+  months: unknown,
+  fallbackMonth: string
+): { month: string; note: string }[] | undefined {
+  if (Array.isArray(months)) {
+    const arr = (months as unknown[])
+      .map((m: unknown) => {
+        const x = m as any;
+        if (x && typeof x === "object" && typeof x.month === "string" && typeof x.note === "string") {
+          return { month: x.month, note: x.note };
+        }
+        // If an array of strings slipped through
+        if (typeof m === "string") return { month: fallbackMonth, note: m };
+        return null;
+      })
+      .filter(Boolean) as { month: string; note: string }[];
+    return arr.length ? arr : undefined;
+  }
+  if (typeof months === "string" && months.trim()) {
+    return [{ month: fallbackMonth, note: months.trim() }];
+  }
+  return undefined;
+}
+
+function ensureNameSlug(d: any, index: number) {
+  const name =
+    typeof d.name === "string" && d.name.trim()
+      ? d.name.trim()
+      : `Option ${index + 1}`;
+  const slug =
+    typeof d.slug === "string" && d.slug.trim()
+      ? slugify(d.slug.trim())
+      : slugify(name);
+  return { name, slug };
+}
+
+function fallbackFinalRecommendation(destinations: any[]): string {
+  if (!Array.isArray(destinations) || destinations.length === 0) {
+    return "We compared five options and chose the best overall fit for your group.";
+  }
+  // pick the destination with the lowest average fare if possible
+  let best = destinations[0];
+  let bestAvg = Infinity;
+  for (const d of destinations) {
+    const fares = Array.isArray(d.per_traveler_fares) ? d.per_traveler_fares : [];
+    const avg =
+      fares.length > 0
+        ? fares.reduce((a: number, f: any) => a + Number(f?.avgUSD || 0), 0) / fares.length
+        : Infinity;
+    if (avg < bestAvg) {
+      bestAvg = avg;
+      best = d;
+    }
+  }
+  return `Top pick: ${best?.name || "Option 1"} — best overall balance of cost and fit for your group.`;
+}
+
+// ------------ route ------------
+export async function POST(req: NextRequest) {
+  const reqId = Math.random().toString(36).slice(2, 8);
+  try {
+    if (!process.env.OPENAI_API_KEY) {
+      throw new Error("Missing OPENAI_API_KEY");
+    }
+
+    const rawBody = await req.json();
+    console.log(`[plan ${reqId}] Incoming body keys:`, Object.keys(rawBody || {}));
+
+    // validate input
+    let body: z.infer<typeof Body>;
+    try {
+      body = Body.parse(rawBody);
+    } catch (e: any) {
+      console.error(`[plan ${reqId}] Zod body validation error:`, e?.errors || e);
+      return new NextResponse("Invalid request body", { status: 400 });
+    }
+
+    const prompt = buildPrompt(body);
+    console.log(
+      `[plan ${reqId}] Model: ${MODEL} | Prompt length: ${prompt.length}\n` +
+      `[plan ${reqId}] Prompt head:\n${short(prompt)}`
+    );
+
+    // ask OpenAI (JSON enforced)
+    const completion = await openai.chat.completions.create({
+      model: MODEL,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: "You produce strict JSON that matches the spec exactly. Arrays must be arrays (not objects)." },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.3,
+    });
+
+    const raw = completion.choices?.[0]?.message?.content?.trim() || "";
+    console.log(`[plan ${reqId}] OpenAI raw head:\n${short(raw)}`);
+    if (!raw) throw new Error("OpenAI returned empty content");
+
+    // strict parse → fallback partial
+    let json: any;
+    try {
+      json = JSON.parse(raw);
+    } catch {
+      console.warn(`[plan ${reqId}] Strict parse failed; trying partial-json.`);
+      json = partialJsonParse(raw);
+    }
+
+    // -------- normalize typical issues BEFORE validation --------
+    if (!json || typeof json !== "object") {
+      throw new Error("Model returned non-object JSON");
+    }
+
+    if (!Array.isArray(json.destinations)) {
+      // try to lift from 'options' or similar
+      if (Array.isArray(json.options)) json.destinations = json.options;
+      else throw new Error("Model did not return 'destinations' array");
+    }
+
+    // coerce exactly 5 items (truncate/expand if needed)
+    if (json.destinations.length > 5) json.destinations = json.destinations.slice(0, 5);
+    if (json.destinations.length < 5) {
+      // pad with minimal stubs if the model shorted us (better than failing)
+      while (json.destinations.length < 5) json.destinations.push({});
+    }
+
+    json.destinations = json.destinations.map((d: any, i: number) => {
+      const base = d && typeof d === "object" ? d : {};
+
+      // fix name/slug
+      const { name, slug } = ensureNameSlug(base, i);
+
+      // normalize per_traveler_fares
+      const fares = normalizePerTravelerFares(base.per_traveler_fares, body.travelers);
+
+      // normalize months
+      const months = normalizeMonths(base.months, body.timeframe.startMonth);
+
+      // pass-through enrichments if present
+      const analysis = {
+        suggested_month: base.suggested_month,
+        seasonal_warnings: base.seasonal_warnings,
+        satisfies: base.satisfies,
+        analytics: base.analytics,
+        map_center: base.map_center,
+        map_markers: base.map_markers,
+        micro_itinerary: base.micro_itinerary, // if model produced this in narrative aside
+      };
+
+      // narrative fallback
+      const narrative =
+        typeof base.narrative === "string" && base.narrative.trim()
+          ? base.narrative.trim()
+          : `Why ${name} could fit your group: beaches, food, and an easy flight mix.`;
+
+      return {
+        name,
+        slug,
+        narrative,
+        months,
+        per_traveler_fares: fares,
+        // keep enrichments on the destination; we'll also store them in analysis column
+        suggested_month: analysis.suggested_month,
+        seasonal_warnings: analysis.seasonal_warnings,
+        satisfies: analysis.satisfies,
+        analytics: analysis.analytics,
+        map_center: analysis.map_center,
+        map_markers: analysis.map_markers,
+      };
+    });
+
+    if (!json.final_recommendation || typeof json.final_recommendation !== "string") {
+      json.final_recommendation = fallbackFinalRecommendation(json.destinations);
+    }
+
+    // default group_fit
+    if (!json.group_fit || typeof json.group_fit !== "object") {
+      json.group_fit = {
+        summary:
+          "Balanced for cost, convenience, and interests across the group.",
+      };
+    }
+
+    // -------- now validate against strict schema --------
+    let parsed: z.infer<typeof PlanSchema>;
+    try {
+      parsed = PlanSchema.parse(json);
+    } catch (e: any) {
+      console.error(`[plan ${reqId}] Zod output validation error:`, e?.errors || e);
+      console.error(`[plan ${reqId}] Raw model output:\n${short(JSON.stringify(json || {}), 2000)}`);
+      return new NextResponse("Model output did not match schema", { status: 400 });
+    }
+
+    // ---- compute summary ----
+    const familySizeFor = (name: string) => {
+      const t = body.travelers.find(
+        (x) => x.name.trim().toLowerCase() === name.trim().toLowerCase()
+      );
+      if (!t) return 1;
+      const kids = Number(t.kids || "0") || 0;
+      const spouse = t.spouse?.trim() ? 1 : 0;
+      return 1 + spouse + kids;
+    };
+
+    const summary = {
+      destinations: parsed.destinations
+        .map((d) => {
+          const travelerTotal = d.per_traveler_fares.reduce((acc, f) => {
+            const mult = familySizeFor(f.travelerName);
+            return acc + f.avgUSD * mult;
+          }, 0);
+
+          const totalCount = body.travelers.reduce((acc, t) => {
+            const kids = Number(t.kids || "0") || 0;
+            const spouse = t.spouse?.trim() ? 1 : 0;
+            return acc + 1 + spouse + kids;
+          }, 0);
+
+          const perPerson = totalCount ? travelerTotal / totalCount : travelerTotal;
+
+          return {
+            name: d.name,
+            slug: d.slug,
+            totalGroupUSD: Math.round(travelerTotal),
+            avgPerPersonUSD: Math.round(perPerson),
+          };
+        })
+        .sort((a, b) => a.totalGroupUSD - b.totalGroupUSD),
+    };
+
+    console.log(`[plan ${reqId}] Saving plan`, {
+      timeframe: body.timeframe,
+      travelersCount: body.travelers.length,
+      destSlugs: summary.destinations.map((d) => d.slug),
+    });
+
+    // ---- save plan (includes full model_output for auditing/richer UI) ----
+    const [plan] = await q<{ id: string }>(
+      `
+      INSERT INTO plans
+        (timeframe, travelers, suggestions, model, final_recommendation, summary, model_output, group_fit)
+      VALUES
+        ($1::jsonb,$2::jsonb,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb)
+      RETURNING id
+      `,
+      [
+        toJsonb(body.timeframe),
+        toJsonb(body.travelers),
+        body.suggestions ?? null,
+        MODEL,
+        parsed.final_recommendation,
+        toJsonb(summary),
+        toJsonb(json),           // raw normalized model output
+        toJsonb(parsed.group_fit ?? null),
+      ]
+    );
+
+    // ---- save destinations ----
+    for (const d of parsed.destinations) {
+      const matched = summary.destinations.find((s) => s.slug === d.slug);
+      const totals = {
+        avgPerPerson: matched?.avgPerPersonUSD ?? null,
+        totalGroup: matched?.totalGroupUSD ?? null,
+      };
+
+      // store the fully normalized destination as `analysis` for rich UI
+      await q(
+        `
+        INSERT INTO destinations
+          (plan_id, slug, name, narrative, months, per_traveler_fares, totals, analysis)
+        VALUES
+          ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7::jsonb,$8::jsonb)
+        `,
+        [
+          plan.id,
+          d.slug,
+          d.name,
+          d.narrative,
+          toJsonb(d.months ?? []),
+          toJsonb(d.per_traveler_fares),
+          toJsonb(totals),
+          toJsonb(d), // includes map_center/map_markers/satisfies/etc
+        ]
+      );
+    }
+
+    console.log(`[plan ${reqId}] Done. planId=${plan.id}`);
+    return NextResponse.json({ planId: plan.id });
+  } catch (err: any) {
+    // visible in Vercel logs
+    console.error("[/api/plan] Fatal:", err?.response?.data ?? err?.message ?? err);
+    const msg =
+      err?.response?.data?.error?.message ||
+      err?.message ||
+      "Unknown error";
+    return new NextResponse(msg, { status: 400 });
+  }
 }
