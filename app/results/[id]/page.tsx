@@ -1,4 +1,3 @@
-// app/results/[id]/page.tsx
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import BackgroundMap from "@/components/BackgroundMap";
@@ -38,11 +37,24 @@ type SummaryShape = {
 
 // Fallback centers if the model/DB didn't provide any map_center
 const FALLBACK_CENTERS: Record<string, { lat: number; lon: number }> = {
+  // originals
   lisbon: { lat: 38.7223, lon: -9.1393 },
   "mexico-city": { lat: 19.4326, lon: -99.1332 },
   montreal: { lat: 45.5017, lon: -73.5673 },
   "san-diego": { lat: 32.7157, lon: -117.1611 },
   honolulu: { lat: 21.3069, lon: -157.8583 },
+  // common US set you've been testing
+  austin: { lat: 30.2672, lon: -97.7431 },
+  "austin-texas": { lat: 30.2672, lon: -97.7431 },
+  "las-vegas": { lat: 36.1699, lon: -115.1398 },
+  "los-angeles": { lat: 34.0522, lon: -118.2437 },
+  nashville: { lat: 36.1627, lon: -86.7816 },
+  "charleston-south-carolina": { lat: 32.7765, lon: -79.9311 },
+  savannah: { lat: 32.0809, lon: -81.0912 },
+  "new-orleans": { lat: 29.9511, lon: -90.0715 },
+  miami: { lat: 25.7617, lon: -80.1918 },
+  cancun: { lat: 21.1619, lon: -86.8515 },
+  "puerto-vallarta": { lat: 20.6534, lon: -105.2253 },
 };
 
 const CARD_COLORS = [
@@ -112,8 +124,8 @@ export default async function ResultsPage({ params }: PageProps) {
   const markers = dests
     .map((d) => {
       const mc =
-        d.analysis?.map_center ||
-        (FALLBACK_CENTERS as any)[d.slug] ||
+        d?.analysis?.map_center ??
+        (FALLBACK_CENTERS as any)[d.slug] ??
         null;
       if (!mc || typeof mc.lat !== "number" || typeof mc.lon !== "number") return null;
 
@@ -147,7 +159,7 @@ export default async function ResultsPage({ params }: PageProps) {
       <SectionCard>
         <h2 className="text-lg font-semibold mb-4">Cost comparison</h2>
         <CostComparisons data={summary.destinations} />
-        {/* 🔧 Removed the extra “chips” row that duplicated labels under the chart */}
+        {/* No extra manual legend row below the chart */}
       </SectionCard>
 
       {/* Map with labeled pins */}
@@ -166,7 +178,6 @@ export default async function ResultsPage({ params }: PageProps) {
         <h2 className="text-lg font-semibold mb-3">Destinations</h2>
         <div className="grid md:grid-cols-2 gap-3">
           {dests.map((d, i) => {
-            // Keep card palette gentle and consistent with the home page
             const c = CARD_COLORS[i % CARD_COLORS.length];
             return (
               <div
@@ -175,11 +186,10 @@ export default async function ResultsPage({ params }: PageProps) {
               >
                 <DestinationCard
                   dest={{
-                    // Only pass primitives/arrays that DestinationCard expects
                     slug: d.slug,
                     name: d.name,
                     narrative: d.narrative,
-                    analysis: d.analysis ?? undefined, // may include highlights/best_month/etc.
+                    analysis: d.analysis ?? undefined,
                   }}
                   href={`/results/${useMock ? "demo" : id}/dest/${d.slug}`}
                 />

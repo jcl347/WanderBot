@@ -1,17 +1,15 @@
-// app/results/[id]/dest/[slug]/page.tsx
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import BackgroundMap from "@/components/BackgroundMap";
-// import SectionCard from "@/components/SectionCard"; // ❌ remove if unused
 import RobotBadge from "@/components/RobotBadge";
 import DestDetailClient from "@/components/DestDetailClient";
 import { q } from "@/lib/db";
 import { mockDestinationDetailBySlug } from "@/mocks/destinations";
 
-type PageProps = { params: Promise<{ id: string; slug: string }> };
+type PageProps = { params: { id: string; slug: string } };
 
 export default async function DestDetail({ params }: PageProps) {
-  const { id, slug } = await params;
+  const { id, slug } = params;
 
   const useMock =
     id === "demo" ||
@@ -20,7 +18,10 @@ export default async function DestDetail({ params }: PageProps) {
 
   if (!useMock) {
     const [dest] = await q<any>(
-      "select slug, name, narrative, months, per_traveler_fares, analysis from destinations where plan_id = $1 and slug = $2",
+      `select slug, name, narrative, months, per_traveler_fares, analysis
+         from destinations
+        where plan_id = $1 and slug = $2
+        limit 1`,
       [id, slug]
     );
     if (!dest) return notFound();
@@ -38,7 +39,6 @@ export default async function DestDetail({ params }: PageProps) {
     );
   }
 
-  // mock path
   const dest = mockDestinationDetailBySlug[slug];
   if (!dest) return notFound();
 
