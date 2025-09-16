@@ -56,7 +56,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     leftList = modelQueries.slice(0, mid);
     rightList = modelQueries.slice(mid);
   } else {
-    // Fallback to simple, short phrases
+    // Fallback to simple, short phrases using landmarks + lifestyle
     const markerNames: string[] = (analysis.map_markers || [])
       .map((m: any) => (typeof m?.name === "string" ? m.name : ""))
       .filter(Boolean);
