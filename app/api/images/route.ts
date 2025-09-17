@@ -1,4 +1,3 @@
-// app/api/images/route.ts
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -8,7 +7,7 @@ async function verifyImage(url: string): Promise<boolean> {
   try {
     const res = await fetch(url, { method: "HEAD", cache: "no-store" });
     if (!res.ok) return false;
-    const ct = res.headers.get("content-type") || "";
+    const ct = (res.headers.get("content-type") || "").toLowerCase();
     return ct.startsWith("image/");
   } catch {
     return false;
@@ -27,16 +26,16 @@ type CommonsImage = {
 async function commonsSearch(q: string, count: number): Promise<CommonsImage[]> {
   const reqId = Math.random().toString(36).slice(2, 8);
   const u = new URL("https://commons.wikimedia.org/w/api.php");
-  // We bias to photographic content and get a large set then trim.
+
+  // Encourage photo-ish results; we fetch a bigger set and then verify.
   u.searchParams.set("action", "query");
   u.searchParams.set("format", "json");
   u.searchParams.set("prop", "imageinfo");
   u.searchParams.set("generator", "search");
-  // Encourage photo-ish results; you can tune this string.
   u.searchParams.set("gsrsearch", `${q} filetype:bitmap`);
-  u.searchParams.set("gsrlimit", String(Math.min(50, Math.max(count * 4, 20))));
+  u.searchParams.set("gsrlimit", String(Math.min(50, Math.max(count * 4, 24))));
   u.searchParams.set("iiprop", "url|size|mime|extmetadata");
-  u.searchParams.set("iiurlwidth", "1600"); // decent thumbs
+  u.searchParams.set("iiurlwidth", "1600");
   u.searchParams.set("origin", "*");
 
   console.log(`[images ${reqId}] commons query=`, q);
@@ -47,9 +46,7 @@ async function commonsSearch(q: string, count: number): Promise<CommonsImage[]> 
   }
   const data = await res.json();
   const pages: any[] = Object.values(data?.query?.pages ?? {});
-  console.log(
-    `[images ${reqId}] commons raw pages=${pages.length} (pre-filter)`
-  );
+  console.log(`[images ${reqId}] commons raw pages=`, pages.length);
 
   const out: CommonsImage[] = [];
   for (const p of pages) {
@@ -69,7 +66,6 @@ async function commonsSearch(q: string, count: number): Promise<CommonsImage[]> 
       license: ii?.extmetadata?.LicenseShortName?.value,
     };
 
-    // Optional but helpful: HEAD verify once to avoid broken links.
     const ok = await verifyImage(item.url);
     if (!ok) continue;
 
@@ -77,12 +73,11 @@ async function commonsSearch(q: string, count: number): Promise<CommonsImage[]> 
     if (out.length >= count) break;
   }
 
-  console.log(
-    `[images ${reqId}] commons verified=${out.length}/${count} (returning)`
-  );
+  console.log(`[images ${reqId}] commons verified=`, `${out.length}/${count}`);
   return out;
 }
 
+// Support POST (preferred)
 export async function POST(req: Request) {
   const reqId = Math.random().toString(36).slice(2, 8);
   try {
@@ -94,6 +89,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ images: [] });
     }
 
+    console.log(`[images ${reqId}] request=`, { q, count });
     const images = await commonsSearch(q, Math.max(1, Math.min(count, 24)));
     return NextResponse.json({ images });
   } catch (e: any) {

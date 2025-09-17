@@ -73,6 +73,7 @@ const DestSchema = z.object({
       mostExpensiveMonth: z.string().optional(),
     })
     .optional(),
+
   map_center: z.object({ lat: z.number(), lon: z.number() }).optional(),
   map_markers: z
     .array(
@@ -125,6 +126,7 @@ function buildPrompt(input: z.infer<typeof Body>) {
     )
     .join("\n");
 
+  // EXAMPLE shows numeric coords + short image phrases
   const example = `
 EXAMPLE DESTINATION (shape only):
 {
@@ -149,16 +151,17 @@ EXAMPLE DESTINATION (shape only):
     { "name": "Santa Monica Pier", "position": [34.0101, -118.4965], "blurb": "Iconic pier" }
   ],
   "image_queries": [
-    "Santa Monica Pier sunset",
-    "The Getty museum architecture",
-    "Downtown LA skyline night",
-    "Grand Central Market food stalls",
-    "Hollywood Bowl concert crowd",
-    "Arts District street art murals"
+    "Los Angeles skyline",
+    "Los Angeles street art",
+    "Los Angeles live music",
+    "Grand Central Market food",
+    "Hollywood Bowl concert",
+    "Santa Monica Pier"
   ]
 }
 `.trim();
 
+  // ✅ Prompt: enforce numeric coords, short image queries, and full month coverage
   return `
 You're a travel analyst for indecisive group trips. Produce **exactly 5 destinations** with opinionated reasoning and airfare estimates. Output **strict JSON**.
 
@@ -175,8 +178,11 @@ Rules:
   • "narrative": WHY it fits the group (**embed a tiny 2–3 bullet micro-itinerary in prose**)
   • "per_traveler_fares": ARRAY of { travelerName, from, avgUSD, monthBreakdown? }  (monthBreakdown is an ARRAY)
   • "months": ARRAY that **covers every month between ${timeframe.startMonth} and ${timeframe.endMonth} inclusive**. Each note should call out a **specific major event/festival/parade/marathon/fair** for that month if applicable; otherwise the best seasonal hook (weather/shoulder/holiday) + a recurring scene (e.g., night market, beach bonfires).
-  • "image_queries": ARRAY of **6–12 short search phrases** tailored to the group’s interests and the micro-itinerary (mix of landmarks, food/nightlife, parks/museums, and festivals).
-  • OPTIONAL: "suggested_month", "seasonal_warnings", "satisfies", "analytics", "map_center", "map_markers"
+  • "map_center": strictly numeric decimal degrees, e.g. { "lat": 30.2672, "lon": -97.7431 }.
+  • "map_markers": ARRAY of ≥3 POIs with numeric coordinates, e.g. { "name": "Zilker Park", "position": [30.2669, -97.7726] }.
+    ❗ Do NOT return strings for coordinates; both values must be numbers.
+  • "image_queries": ARRAY of **6–12 short search phrases** tailored to the group’s interests and micro-itinerary — each should be a simple phrase like "<city> <keyword>", e.g. "Austin skyline", "Austin street art", "Austin live music", "Zilker Park".
+  • OPTIONAL: "suggested_month", "seasonal_warnings", "satisfies", "analytics"
 - Also provide "final_recommendation" and optional "group_fit".
 
 Return JSON like:
@@ -334,6 +340,23 @@ function fallbackFinalRecommendation(destinations: any[]): string {
   return `Top pick: ${best?.name || "Option 1"} — best overall balance of cost and fit for your group.`;
 }
 
+// Coerce/clean markers (avoid string coords from the model)
+function normalizeMarkers(
+  raw: any
+): { name: string; position: [number, number] }[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: { name: string; position: [number, number] }[] = [];
+  for (const m of raw) {
+    const name = typeof m?.name === "string" ? m.name : "Pin";
+    const lat = Number(m?.position?.[0]);
+    const lon = Number(m?.position?.[1]);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) {
+      out.push({ name, position: [lat, lon] });
+    }
+  }
+  return out.length ? out : undefined;
+}
+
 // Expand/force months to cover the entire requested window (inclusive)
 function expandMonthsToRange(
   months: { month: string; note: string }[] | undefined,
@@ -351,22 +374,41 @@ function expandMonthsToRange(
   const [sy, sm] = startMonth.split("-").map(Number);
   const [ey, em] = endMonth.split("-").map(Number);
   let y = sy,
-    m = sm;
-  while (y < ey || (y === ey && m <= em)) {
-    const key = `${y}-${String(m).padStart(2, "0")}`;
+    mm = sm;
+  while (y < ey || (y === ey && mm <= em)) {
+    const key = `${y}-${String(mm).padStart(2, "0")}`;
     out.push({
       month: key,
       note:
         map.get(key) ||
         "No marquee festival flagged; typical seasonal conditions and regular happenings.",
     });
-    m++;
-    if (m > 12) {
-      m = 1;
+    mm++;
+    if (mm > 12) {
+      mm = 1;
       y++;
     }
   }
   return out;
+}
+
+// Build very short image queries if the model omitted them
+function fallbackImageQueries(name: string, narrative: string, markerNames: string[]) {
+  const city = String(name || "").trim();
+  const basics = [
+    `${city} skyline`,
+    `${city} downtown`,
+    `${city} landmarks`,
+    `${city} street art`,
+    `${city} festival`,
+    `${city} live music`,
+    `${city} night market`,
+    `${city} coffee`,
+    `${city} nightlife`,
+  ];
+  const poi = (markerNames || []).slice(0, 4).map((n) => `${city} ${n}`);
+  const set = new Set([...basics, ...poi].filter(Boolean));
+  return Array.from(set).slice(0, 12);
 }
 
 // ---------------- route ----------------
@@ -459,21 +501,40 @@ export async function POST(req: NextRequest) {
         body.timeframe.endMonth
       );
 
+      // numeric map_center
+      const mc =
+        base?.map_center &&
+        Number.isFinite(Number(base.map_center.lat)) &&
+        Number.isFinite(Number(base.map_center.lon))
+          ? { lat: Number(base.map_center.lat), lon: Number(base.map_center.lon) }
+          : undefined;
+
+      const cleanedMarkers = normalizeMarkers(base.map_markers);
+
+      // image queries (short phrases)
+      let imageQueries: string[] | undefined = Array.isArray(base.image_queries)
+        ? base.image_queries
+            .map((s: unknown) => (typeof s === "string" ? s.trim() : ""))
+            .filter(Boolean)
+            .slice(0, 12)
+        : undefined;
+
+      if (!imageQueries || imageQueries.length < 4) {
+        const markerNames = (cleanedMarkers || []).map((m) => m.name);
+        imageQueries = fallbackImageQueries(name, base.narrative || "", markerNames);
+      }
+
       const analysis = {
         suggested_month: base.suggested_month,
         seasonal_warnings: base.seasonal_warnings,
         satisfies: base.satisfies,
         analytics: base.analytics,
-        map_center: base.map_center,
-        map_markers: base.map_markers,
-        image_queries: Array.isArray(base.image_queries)
-          ? base.image_queries.slice(0, 12)
-          : undefined,
+        map_center: mc,
+        map_markers: cleanedMarkers,
+        image_queries: imageQueries,
         photos: Array.isArray(base.photos) ? base.photos.slice(0, 4) : undefined,
         photo_attribution:
-          typeof base.photo_attribution === "string"
-            ? base.photo_attribution
-            : undefined,
+          typeof base.photo_attribution === "string" ? base.photo_attribution : undefined,
       };
 
       const narrative =
@@ -560,17 +621,19 @@ export async function POST(req: NextRequest) {
         .sort((a, b) => a.totalGroupUSD - b.totalGroupUSD),
     };
 
-    // Log a compact view for Vercel
+    // Log useful bits for Vercel
+    console.log(`[plan ${reqId}] parsed slugs=`, summary.destinations.map((d) => d.slug));
     console.log(
-      `[plan ${reqId}] parsed summary slugs=`,
-      summary.destinations.map((d) => d.slug)
+      `[plan ${reqId}] coords preview=`,
+      parsed.destinations.map((d) => ({
+        slug: d.slug,
+        center: d.map_center || d.analysis?.map_center || null,
+        markers: (d.map_markers || d.analysis?.map_markers || []).length,
+      }))
     );
     console.log(
       `[plan ${reqId}] image_queries counts=`,
-      parsed.destinations.map((d) => ({
-        slug: d.slug,
-        n: d.image_queries?.length || 0,
-      }))
+      parsed.destinations.map((d) => ({ slug: d.slug, n: d.image_queries?.length || 0 }))
     );
 
     // ---- save plan ----
@@ -617,7 +680,7 @@ export async function POST(req: NextRequest) {
           toJsonb(d.months ?? []),
           toJsonb(d.per_traveler_fares),
           toJsonb(totals),
-          toJsonb(d), // includes image_queries, photos, etc.
+          toJsonb(d), // includes image_queries, photos, coords, etc.
         ]
       );
     }

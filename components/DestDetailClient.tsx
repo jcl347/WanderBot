@@ -1,4 +1,3 @@
-// components/DestDetailClient.tsx
 "use client";
 
 import React from "react";
@@ -16,45 +15,42 @@ type Fare = {
 
 type Marker = { name?: string; position?: [number, number] };
 
+function formatMonthYYYY(mm: string) {
+  // expects "YYYY-MM"
+  const [y, m] = String(mm).split("-");
+  const d = new Date(Number(y), Number(m) - 1, 1);
+  return isNaN(d.getTime())
+    ? mm
+    : d.toLocaleDateString(undefined, { year: "numeric", month: "long" });
+}
+
 export default function DestDetailClient({ dest }: { dest: any }) {
-  const fares: Fare[] = Array.isArray(dest?.per_traveler_fares)
-    ? dest.per_traveler_fares
-    : [];
+  const fares: Fare[] = Array.isArray(dest?.per_traveler_fares) ? dest.per_traveler_fares : [];
 
-  // ---------- Months & series ----------
+  // ----- Build chart months -----
   const monthSet = new Set<string>();
-  for (const f of fares) {
-    for (const m of f.monthBreakdown || []) {
-      if (m?.month) monthSet.add(m.month);
-    }
-  }
-
+  for (const f of fares) for (const m of f.monthBreakdown || []) if (m?.month) monthSet.add(m.month);
   let months = Array.from(monthSet).sort();
+
   if (months.length === 0) {
     const base = String(dest.best_month || dest.suggested_month || "2026-01").slice(0, 7);
     const [y, m] = base.split("-").map((x: string) => Number(x));
     const trio = [new Date(y, m - 2, 1), new Date(y, m - 1, 1), new Date(y, m, 1)];
-    months = trio.map(
-      (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`
-    );
+    months = trio.map((d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
   }
 
   const series = months.map((m) => {
     const row: Record<string, number | string | null> = { month: m };
     for (const f of fares) {
       const found = f.monthBreakdown?.find((x) => x.month === m)?.avgUSD;
-      row[f.travelerName] = Number.isFinite(found as number)
-        ? (found as number)
-        : f.avgUSD ?? null;
+      row[f.travelerName] = Number.isFinite(found as number) ? (found as number) : f.avgUSD ?? null;
     }
     return row;
   });
 
-  // ---------- Map (always at least one pin) ----------
+  // ----- Map pins (coerce to numbers & guarantee at least one) -----
   const analysis = dest?.analysis ?? {};
-  const rawMarkers: Marker[] = Array.isArray(analysis.map_markers)
-    ? (analysis.map_markers as Marker[])
-    : [];
+  const rawMarkers: Marker[] = Array.isArray(analysis.map_markers) ? analysis.map_markers : [];
 
   let pins =
     rawMarkers
@@ -62,30 +58,19 @@ export default function DestDetailClient({ dest }: { dest: any }) {
         const lat = Number(m?.position?.[0]);
         const lon = Number(m?.position?.[1]);
         if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-        return {
-          position: [lat, lon] as [number, number],
-          label: String(m?.name || dest?.name || "Pin"),
-        };
+        return { position: [lat, lon] as [number, number], label: String(m?.name || dest?.name || "Pin") };
       })
       .filter(Boolean) as { position: [number, number]; label: string }[];
 
   const mc = analysis.map_center ?? dest.map_center;
   const hasCenter = Number.isFinite(mc?.lat) && Number.isFinite(mc?.lon);
-
   if (pins.length === 0 && hasCenter) {
-    pins = [
-      {
-        position: [mc.lat, mc.lon],
-        label: String(dest?.name || "Center"),
-      },
-    ];
+    pins = [{ position: [mc.lat, mc.lon], label: String(dest?.name || "Center") }];
   }
+  const center: [number, number] | undefined = hasCenter ? [mc.lat, mc.lon] : pins[0]?.position;
 
-  const center: [number, number] | undefined = hasCenter
-    ? [mc.lat, mc.lon]
-    : pins[0]?.position;
-
-  // ---------- Image query lists ----------
+  // ----- Image query lists: simple "{city} {keyword}" phrases -----
+  // Prefer model-provided analysis.image_queries (already short phrases).
   const modelQueries: string[] = Array.isArray(analysis.image_queries)
     ? analysis.image_queries.filter((s: unknown) => typeof s === "string" && s.trim())
     : [];
@@ -98,36 +83,34 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     leftList = modelQueries.slice(0, mid);
     rightList = modelQueries.slice(mid);
   } else {
-    const markerNames: string[] = rawMarkers
+    // Very simple keyword rails to keep the images endpoint happy.
+    const city = String(dest?.name || "").trim();
+    const markerNames: string[] = (Array.isArray(rawMarkers) ? rawMarkers : [])
       .map((m) => (typeof m?.name === "string" ? m.name : ""))
       .filter(Boolean);
 
     leftList = [
-      `${dest.name} landmarks`,
-      `${dest.name} skyline`,
-      ...markerNames.slice(0, 4),
+      `${city} skyline`,
+      `${city} downtown`,
+      `${city} landmarks`,
+      ...markerNames.slice(0, 3).map((n) => `${city} ${n}`),
     ].filter(Boolean);
 
     rightList = [
-      `${dest.name} food`,
-      `${dest.name} nightlife`,
-      `${dest.name} market`,
-      `${dest.name} music`,
-      `${dest.name} shopping`,
+      `${city} street market`,
+      `${city} nightlife`,
+      `${city} live music`,
+      `${city} coffee`,
+      `${city} street art`,
+      `${city} festival`,
+      `${city} beach`,
     ];
   }
 
   return (
     <>
-      {/* Photo rails — LiveCollage expects lists of short phrases */}
-      <LiveCollage
-        leftList={leftList}
-        rightList={rightList}
-        leftCount={10}
-        rightCount={10}
-      />
+      <LiveCollage leftList={leftList} rightList={rightList} leftCount={10} rightCount={10} />
 
-      {/* Middle analytics/content column */}
       <div className="md:col-start-2 md:row-start-1 md:px-0 space-y-4">
         <SectionCard>
           <h1 className="text-2xl font-semibold">{dest.name}</h1>
@@ -140,7 +123,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
             <ul className="list-disc pl-6 text-sm">
               {dest.months.map((m: any) => (
                 <li key={m.month}>
-                  <span className="font-medium">{m.month}:</span> {m.note}
+                  <span className="font-medium">{formatMonthYYYY(m.month)}:</span> {m.note}
                 </li>
               ))}
             </ul>
@@ -161,16 +144,10 @@ export default function DestDetailClient({ dest }: { dest: any }) {
           <h2 className="text-lg font-semibold mb-3">Map</h2>
           {center ? (
             <div className="h-64">
-              <MapLeaflet
-                center={center}
-                zoom={pins.length > 1 ? 11 : 8}
-                markers={pins}
-              />
+              <MapLeaflet center={center} zoom={pins.length > 1 ? 11 : 8} markers={pins} />
             </div>
           ) : (
-            <div className="text-sm text-neutral-500">
-              No map data available for this destination.
-            </div>
+            <div className="text-sm text-neutral-500">No map data available for this destination.</div>
           )}
         </SectionCard>
 
