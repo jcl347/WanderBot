@@ -1,3 +1,4 @@
+// app/api/plan/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import OpenAI from "openai";
@@ -25,7 +26,7 @@ const Traveler = z.object({
   id: z.string(),
   name: z.string(),
   relationship: z.string().optional(),
-  homeLocation: z.string(),
+  homeLocation: z.string(), // city or airport code the UI shows
   age: z.string().optional(),
   gender: z.string().optional(),
   personality: z.string().optional(),
@@ -44,7 +45,7 @@ const Body = z.object({
 const DestFare = z.object({
   travelerName: z.string(),
   from: z.string(),
-  avgUSD: z.number(),
+  avgUSD: z.number(), // overall average (quick read)
   monthBreakdown: z
     .array(z.object({ month: z.string(), avgUSD: z.number() }))
     .optional(),
@@ -71,6 +72,7 @@ const DestSchema = z.object({
       varianceUSD: z.number().optional(),
       cheapestMonth: z.string().optional(),
       mostExpensiveMonth: z.string().optional(),
+      // optionally the model may return distanceBand, confidence, etc.—we ignore if present
     })
     .optional(),
 
@@ -85,10 +87,8 @@ const DestSchema = z.object({
     )
     .optional(),
 
-  // for LiveCollage
   image_queries: z.array(z.string()).optional(),
 
-  // optional media (kept flexible)
   photos: z.array(z.string().url()).optional(),
   photo_attribution: z.string().optional(),
 });
@@ -105,96 +105,152 @@ const PlanSchema = z.object({
   destinations: z.array(DestSchema).length(5),
 });
 
-// ---------------- prompt ----------------
-function buildPrompt(input: z.infer<typeof Body>) {
-  const { travelers, timeframe, suggestions } = input;
-  const dislikes = travelers.find((t) =>
-    (t.personality || "").toLowerCase().includes("dislikes travel")
-  );
-  const anchor = dislikes?.homeLocation ?? "none";
-
-  const tableHeader =
-    "| Name | Me? | Relation | Home | Spouse | Kids | Personality |\n|---|---|---|---|---|---|---|\n";
-  const rows = travelers
-    .map(
-      (t) =>
-        `| ${t.name} | ${t.isUser ? "✅" : ""} | ${t.relationship ?? "—"} | ${
-          t.homeLocation
-        } | ${t.spouse ?? "—"} | ${t.kids ?? "0"} | ${(
-          t.personality ?? ""
-        ).replaceAll("|", "/")} |`
-    )
-    .join("\n");
-
-  // EXAMPLE shows numeric coords + short image phrases
-  const example = `
-EXAMPLE DESTINATION (shape only):
-{
-  "name": "Los Angeles",
-  "slug": "los-angeles",
-  "narrative": "Why it fits this group… include a tiny 2–3 bullet micro-itinerary in prose.",
-  "per_traveler_fares": [
-    { "travelerName": "${travelers[0].name}", "from": "${travelers[0].homeLocation}", "avgUSD": 350,
-      "monthBreakdown": [
-        { "month": "${timeframe.startMonth}", "avgUSD": 340 },
-        { "month": "${timeframe.endMonth}", "avgUSD": 410 }
-      ]
+// ---------------- small utils ----------------
+function listMonthsInclusive(startYM: string, endYM: string): string[] {
+  const [sy, sm] = startYM.split("-").map(Number);
+  const [ey, em] = endYM.split("-").map(Number);
+  const out: string[] = [];
+  let y = sy,
+    m = sm;
+  while (y < ey || (y === ey && m <= em)) {
+    out.push(`${y}-${String(m).padStart(2, "0")}`);
+    m++;
+    if (m > 12) {
+      m = 1;
+      y++;
     }
-  ],
-  "months": [
-    { "month": "${timeframe.startMonth}", "note": "Specific major event/festival; quick seasonal tag" }
-  ],
-  "suggested_month": "${timeframe.startMonth}",
-  "seasonal_warnings": [{ "month": "${timeframe.endMonth}", "note": "Peak heat/crowds" }],
-  "map_center": { "lat": 34.0522, "lon": -118.2437 },
-  "map_markers": [
-    { "name": "Santa Monica Pier", "position": [34.0101, -118.4965], "blurb": "Iconic pier" }
-  ],
-  "image_queries": [
-    "Los Angeles skyline",
-    "Los Angeles street art",
-    "Los Angeles live music",
-    "Grand Central Market food",
-    "Hollywood Bowl concert",
-    "Santa Monica Pier"
-  ]
-}
-`.trim();
-
-  // ✅ Prompt: enforce numeric coords, short image queries, and full month coverage
-  return `
-You're a travel analyst for indecisive group trips. Produce **exactly 5 destinations** with opinionated reasoning and airfare estimates. Output **strict JSON**.
-
-TRAVELERS
-${tableHeader}${rows}
-
-TIMEFRAME: ${timeframe.startMonth} → ${timeframe.endMonth}
-USER IDEAS: ${suggestions?.trim() || "none"}
-
-Rules:
-- If ANY traveler includes "dislikes travel", **center the trip near their home** (${anchor}). Otherwise minimize total group flight cost while balancing interests.
-- For each destination **return these keys exactly**:
-  • "name" (string) and "slug" (kebab-case)
-  • "narrative": WHY it fits the group (**embed a tiny 2–3 bullet micro-itinerary in prose**)
-  • "per_traveler_fares": ARRAY of { travelerName, from, avgUSD, monthBreakdown? }  (monthBreakdown is an ARRAY)
-  • "months": ARRAY that **covers every month between ${timeframe.startMonth} and ${timeframe.endMonth} inclusive**. Each note should call out a **specific major event/festival/parade/marathon/fair** for that month if applicable; otherwise the best seasonal hook (weather/shoulder/holiday) + a recurring scene (e.g., night market, beach bonfires).
-  • "map_center": strictly numeric decimal degrees, e.g. { "lat": 30.2672, "lon": -97.7431 }.
-  • "map_markers": ARRAY of ≥3 POIs with numeric coordinates, e.g. { "name": "Zilker Park", "position": [30.2669, -97.7726] }.
-    ❗ Do NOT return strings for coordinates; both values must be numbers.
-  • "image_queries": ARRAY of **6–12 short search phrases** tailored to the group’s interests and micro-itinerary — each should be a simple phrase like "<city> <keyword>", e.g. "Austin skyline", "Austin street art", "Austin live music", "Zilker Park".
-  • OPTIONAL: "suggested_month", "seasonal_warnings", "satisfies", "analytics"
-- Also provide "final_recommendation" and optional "group_fit".
-
-Return JSON like:
-{
-  "final_recommendation": "…",
-  "group_fit": { "summary": "…", "priorities": ["…"], "tradeoffs": ["…"] },
-  "destinations": [ ${example} , ... x5 total ]
-}
-`.trim();
+  }
+  return out;
 }
 
-// ---------------- normalizers ----------------
+// Clamp & very light smoothing to avoid single-month spikes
+function smoothFareSeries(
+  series: { month: string; avgUSD: number }[]
+): { month: string; avgUSD: number }[] {
+  if (!Array.isArray(series) || series.length === 0) return series || [];
+  const s = series
+    .map((x) => ({
+      month: x.month.slice(0, 7),
+      // clamp to reasonable bounds for round-trip economy
+      avgUSD: Math.min(5000, Math.max(60, Number(x.avgUSD) || 0)),
+    }))
+    .sort((a, b) => a.month.localeCompare(b.month));
+
+  // 3-point median smoothing (no subplots; just tone down wild outliers)
+  const out = s.map((x, i) => {
+    const window = [s[i - 1]?.avgUSD, s[i].avgUSD, s[i + 1]?.avgUSD].filter(
+      (v) => typeof v === "number"
+    ) as number[];
+    if (window.length < 2) return x;
+    const sorted = [...window].sort((a, b) => a - b);
+    const med =
+      sorted.length % 2
+        ? sorted[(sorted.length / 2) | 0]
+        : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+    // if current deviates > 70% from local median, pull it closer (still keep some shape)
+    if (Math.abs(x.avgUSD - med) / Math.max(1, med) > 0.7) {
+      return { month: x.month, avgUSD: Math.round(med * 0.85 + x.avgUSD * 0.15) };
+    }
+    return x;
+  });
+
+  return out;
+}
+
+function shortCity(s: string) {
+  // Use first token as cheap heuristic for “City” when users pass “City, ST (XYZ)”
+  return (s || "").split(/[,(]/)[0].trim() || s || "";
+}
+
+// Coerce/clean markers (avoid string coords)
+function normalizeMarkers(
+  raw: any
+): { name: string; position: [number, number]; blurb?: string }[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: { name: string; position: [number, number]; blurb?: string }[] = [];
+  for (const m of raw) {
+    const name = typeof m?.name === "string" ? m.name : "Pin";
+    const lat = Number(m?.position?.[0]);
+    const lon = Number(m?.position?.[1]);
+    const blurb = typeof m?.blurb === "string" ? m.blurb : undefined;
+    if (Number.isFinite(lat) && Number.isFinite(lon)) {
+      out.push({ name, position: [lat, lon], blurb });
+    }
+  }
+  return out.length ? out : undefined;
+}
+
+// Ensure month notes cover the window
+function expandMonthsToRange(
+  months: { month: string; note: string }[] | undefined,
+  startMonth: string,
+  endMonth: string
+): { month: string; note: string }[] {
+  const map = new Map<string, string>();
+  (months || []).forEach((m) => {
+    if (m?.month && typeof m.note === "string") {
+      map.set(m.month.slice(0, 7), m.note.trim());
+    }
+  });
+
+  const out: { month: string; note: string }[] = [];
+  for (const key of listMonthsInclusive(startMonth, endMonth)) {
+    out.push({
+      month: key,
+      note:
+        map.get(key) ||
+        "No marquee festival flagged; typical seasonal conditions and regular happenings.",
+    });
+  }
+  return out;
+}
+
+// Build short image queries if the model omitted them
+function fallbackImageQueries(name: string, markerNames: string[]) {
+  const city = String(name || "").trim();
+  const basics = [
+    `${city} skyline`,
+    `${city} downtown`,
+    `${city} landmarks`,
+    `${city} street art`,
+    `${city} festival`,
+    `${city} live music`,
+    `${city} market`,
+    `${city} nightlife`,
+  ];
+  const poi = (markerNames || []).slice(0, 4).map((n) => `${city} ${n}`);
+  const set = new Set([...basics, ...poi].filter(Boolean));
+  return Array.from(set).slice(0, 12);
+}
+
+function normalizeMonths(
+  months: unknown,
+  fallbackMonth: string
+): { month: string; note: string }[] | undefined {
+  if (Array.isArray(months)) {
+    const arr = (months as unknown[])
+      .map((m: unknown) => {
+        const x = m as any;
+        if (
+          x &&
+          typeof x === "object" &&
+          typeof x.month === "string" &&
+          typeof x.note === "string"
+        ) {
+          return { month: x.month, note: x.note };
+        }
+        if (typeof m === "string") return { month: fallbackMonth, note: m };
+        return null;
+      })
+      .filter(Boolean) as { month: string; note: string }[];
+    return arr.length ? arr : undefined;
+  }
+  if (typeof months === "string" && months.trim()) {
+    return [{ month: fallbackMonth, note: months.trim() }];
+  }
+  return undefined;
+}
+
 type Travelers = z.infer<typeof Body>["travelers"];
 
 function normalizePerTravelerFares(
@@ -273,36 +329,7 @@ function normalizePerTravelerFares(
     }
     return out;
   }
-
   return [];
-}
-
-function normalizeMonths(
-  months: unknown,
-  fallbackMonth: string
-): { month: string; note: string }[] | undefined {
-  if (Array.isArray(months)) {
-    const arr = (months as unknown[])
-      .map((m: unknown) => {
-        const x = m as any;
-        if (
-          x &&
-          typeof x === "object" &&
-          typeof x.month === "string" &&
-          typeof x.note === "string"
-        ) {
-          return { month: x.month, note: x.note };
-        }
-        if (typeof m === "string") return { month: fallbackMonth, note: m };
-        return null;
-      })
-      .filter(Boolean) as { month: string; note: string }[];
-    return arr.length ? arr : undefined;
-  }
-  if (typeof months === "string" && months.trim()) {
-    return [{ month: fallbackMonth, note: months.trim() }];
-  }
-  return undefined;
 }
 
 function ensureNameSlug(d: any, index: number) {
@@ -340,75 +367,129 @@ function fallbackFinalRecommendation(destinations: any[]): string {
   return `Top pick: ${best?.name || "Option 1"} — best overall balance of cost and fit for your group.`;
 }
 
-// Coerce/clean markers (avoid string coords from the model)
-function normalizeMarkers(
-  raw: any
-): { name: string; position: [number, number] }[] | undefined {
-  if (!Array.isArray(raw)) return undefined;
-  const out: { name: string; position: [number, number] }[] = [];
-  for (const m of raw) {
-    const name = typeof m?.name === "string" ? m.name : "Pin";
-    const lat = Number(m?.position?.[0]);
-    const lon = Number(m?.position?.[1]);
-    if (Number.isFinite(lat) && Number.isFinite(lon)) {
-      out.push({ name, position: [lat, lon] });
-    }
-  }
-  return out.length ? out : undefined;
-}
-
-// Expand/force months to cover the entire requested window (inclusive)
-function expandMonthsToRange(
-  months: { month: string; note: string }[] | undefined,
+// Fill & smooth month series for every traveler
+function enforceFareCoverageAndSmooth(
+  fares: Array<z.infer<typeof DestFare>>,
   startMonth: string,
   endMonth: string
-): { month: string; note: string }[] {
-  const map = new Map<string, string>();
-  (months || []).forEach((m) => {
-    if (m?.month && typeof m.note === "string") {
-      map.set(m.month.slice(0, 7), m.note.trim());
+) {
+  const months = listMonthsInclusive(startMonth, endMonth);
+  for (const f of fares) {
+    const mb = Array.isArray(f.monthBreakdown) ? [...f.monthBreakdown] : [];
+    const idx = new Map(mb.map((x) => [x.month.slice(0, 7), x.avgUSD]));
+    // Fill missing months with the overall avgUSD
+    for (const m of months) {
+      if (!idx.has(m)) mb.push({ month: m, avgUSD: f.avgUSD });
     }
-  });
+    const sorted = mb
+      .map((x) => ({ month: x.month.slice(0, 7), avgUSD: Number(x.avgUSD) }))
+      .sort((a, b) => a.month.localeCompare(b.month));
 
-  const out: { month: string; note: string }[] = [];
-  const [sy, sm] = startMonth.split("-").map(Number);
-  const [ey, em] = endMonth.split("-").map(Number);
-  let y = sy,
-    mm = sm;
-  while (y < ey || (y === ey && mm <= em)) {
-    const key = `${y}-${String(mm).padStart(2, "0")}`;
-    out.push({
-      month: key,
-      note:
-        map.get(key) ||
-        "No marquee festival flagged; typical seasonal conditions and regular happenings.",
-    });
-    mm++;
-    if (mm > 12) {
-      mm = 1;
-      y++;
-    }
+    // Light smoothing + clamp
+    f.monthBreakdown = smoothFareSeries(sorted);
+    // Recompute overall avg as mean of the window
+    const mean =
+      f.monthBreakdown.reduce((a, x) => a + x.avgUSD, 0) /
+      Math.max(1, f.monthBreakdown.length);
+    f.avgUSD = Math.round(mean);
   }
-  return out;
 }
 
-// Build very short image queries if the model omitted them
-function fallbackImageQueries(name: string, narrative: string, markerNames: string[]) {
-  const city = String(name || "").trim();
-  const basics = [
-    `${city} skyline`,
-    `${city} downtown`,
-    `${city} landmarks`,
-    `${city} street art`,
-    `${city} festival`,
-    `${city} live music`,
-    `${city} night market`,
-    `${city} coffee`,
-    `${city} nightlife`,
-  ];
-  const poi = (markerNames || []).slice(0, 4).map((n) => `${city} ${n}`);
-  const set = new Set([...basics, ...poi].filter(Boolean));
-  return Array.from(set).slice(0, 12);
+// ---------------- prompt ----------------
+function buildPrompt(input: z.infer<typeof Body>) {
+  const { travelers, timeframe, suggestions } = input;
+
+  const dislikes = travelers.find((t) =>
+    (t.personality || "").toLowerCase().includes("dislikes travel")
+  );
+  const anchor = dislikes?.homeLocation ?? "none";
+
+  const tableHeader =
+    "| Name | Me? | Relation | Home | Spouse | Kids | Personality |\n|---|---|---|---|---|---|---|\n";
+  const rows = travelers
+    .map(
+      (t) =>
+        `| ${t.name} | ${t.isUser ? "✅" : ""} | ${t.relationship ?? "—"} | ${
+          t.homeLocation
+        } | ${t.spouse ?? "—"} | ${t.kids ?? "0"} | ${(
+          t.personality ?? ""
+        ).replaceAll("|", "/")} |`
+    )
+    .join("\n");
+
+  // Show numeric coords + short image queries explicitly
+  const example = `
+EXAMPLE DESTINATION (shape only):
+{
+  "name": "Los Angeles",
+  "slug": "los-angeles",
+  "narrative": "Why it fits this group… include a tiny 2–3 bullet micro-itinerary in prose.",
+  "per_traveler_fares": [
+    {
+      "travelerName": "${travelers[0].name}",
+      "from": "${shortCity(travelers[0].homeLocation)}",
+      "avgUSD": 350,
+      "monthBreakdown": [
+        { "month": "${timeframe.startMonth}", "avgUSD": 340 },
+        { "month": "${timeframe.endMonth}", "avgUSD": 410 }
+      ]
+    }
+  ],
+  "months": [
+    { "month": "${timeframe.startMonth}", "note": "Specific major event/festival; quick seasonal tag" }
+  ],
+  "suggested_month": "${timeframe.startMonth}",
+  "seasonal_warnings": [{ "month": "${timeframe.endMonth}", "note": "Peak heat/crowds" }],
+  "map_center": { "lat": 34.0522, "lon": -118.2437 },
+  "map_markers": [
+    { "name": "Santa Monica Pier", "position": [34.0101, -118.4965], "blurb": "Iconic pier" }
+  ],
+  "image_queries": [
+    "Los Angeles skyline",
+    "Los Angeles street art",
+    "Los Angeles live music",
+    "Grand Central Market food",
+    "Hollywood Bowl concert",
+    "Santa Monica Pier"
+  ]
+}
+`.trim();
+
+  const monthWindow = `${timeframe.startMonth}–${timeframe.endMonth}`;
+
+  return `
+You are a travel analyst. Output **strict JSON** only (no prose), with **exactly 5 destinations**.
+
+TRAVELERS
+${tableHeader}${rows}
+
+TIMEFRAME: ${timeframe.startMonth} → ${timeframe.endMonth}
+USER IDEAS: ${suggestions?.trim() || "none"}
+
+Airfare guidance for accuracy (no browsing; estimate using historical seasonality, hub connectivity, distance bands):
+- Return **round-trip economy** prices in USD.
+- Provide **"monthBreakdown" covering every month in ${monthWindow}** for each traveler (keys: month "YYYY-MM", avgUSD number).
+- Keep prices realistic: clamp approx to **$60–$5000**; short-haul (≤1000 mi) often $120–$350; medium (1000–3000) $180–$650; long-haul (3000–6000) $400–$1200; very long-haul ($900–$2000+).
+- Apply seasonality: summer/holidays ↑, shoulder ↓, extreme events (major festivals, spring breaks) ↑.
+- Derive an overall "avgUSD" per traveler as the **mean of the monthly values** you return.
+
+Hard requirements:
+- For each destination:
+  • "narrative": explain WHY it fits; **embed a tiny 2–3 bullet micro-itinerary in prose**.
+  • "per_traveler_fares": for each traveler include { "travelerName", "from", "avgUSD", "monthBreakdown": [every month ${monthWindow}] }.
+    - "from" should be the human-readable city or primary airport city (e.g., "Austin" not "AUS").
+  • "months": also **cover every month** in the window; each "note" names a major event/festival if applicable; otherwise seasonal/holiday + recurring scene.
+  • Map: "map_center" { "lat": number, "lon": number } and **6–10 "map_markers"** with numeric "position": [lat, lon] and short "blurb".
+  • Imagery: **8–12 "image_queries"** (short phrases, "<city> <keyword>") blending landmarks, neighborhoods, museums/parks, food/nightlife/markets, and events you cited.
+- If any traveler "dislikes travel", bias location near ${anchor}. Otherwise balance cost vs. interests.
+
+Return JSON like:
+{
+  "final_recommendation": "…",
+  "group_fit": { "summary": "…", "priorities": ["…"], "tradeoffs": ["…"] },
+  "destinations": [ ${example} , … four more ]
+}
+`.trim();
 }
 
 // ---------------- route ----------------
@@ -439,19 +520,20 @@ export async function POST(req: NextRequest) {
       )}\n[prompt.tail]\n${short(prompt.slice(-1200), 1200)}`
     );
 
-    // ask OpenAI (JSON enforced)
+    // ask OpenAI (JSON enforced; tight structure)
     const completion = await openai.chat.completions.create({
       model: MODEL,
       response_format: { type: "json_object" },
+      temperature: 0.2,
+      max_tokens: 4000,
       messages: [
         {
           role: "system",
           content:
-            "You produce strict JSON that matches the spec exactly. Arrays must be arrays (not objects).",
+            "You produce strict machine-parseable JSON matching the requested schema. No commentary or Markdown.",
         },
         { role: "user", content: prompt },
       ],
-      temperature: 0.3,
     });
 
     const raw = completion.choices?.[0]?.message?.content?.trim() || "";
@@ -489,11 +571,20 @@ export async function POST(req: NextRequest) {
       const base = d && typeof d === "object" ? d : {};
 
       const { name, slug } = ensureNameSlug(base, i);
+
+      // per-traveler fares
       const fares = normalizePerTravelerFares(
         base.per_traveler_fares,
         body.travelers
       );
+      // guarantee full coverage & smooth spikes
+      enforceFareCoverageAndSmooth(
+        fares,
+        body.timeframe.startMonth,
+        body.timeframe.endMonth
+      );
 
+      // month notes
       const monthsRaw = normalizeMonths(base.months, body.timeframe.startMonth);
       const months = expandMonthsToRange(
         monthsRaw,
@@ -501,17 +592,16 @@ export async function POST(req: NextRequest) {
         body.timeframe.endMonth
       );
 
-      // numeric map_center
+      // map
       const mc =
         base?.map_center &&
         Number.isFinite(Number(base.map_center.lat)) &&
         Number.isFinite(Number(base.map_center.lon))
           ? { lat: Number(base.map_center.lat), lon: Number(base.map_center.lon) }
           : undefined;
-
       const cleanedMarkers = normalizeMarkers(base.map_markers);
 
-      // image queries (short phrases)
+      // imagery
       let imageQueries: string[] | undefined = Array.isArray(base.image_queries)
         ? base.image_queries
             .map((s: unknown) => (typeof s === "string" ? s.trim() : ""))
@@ -519,9 +609,9 @@ export async function POST(req: NextRequest) {
             .slice(0, 12)
         : undefined;
 
-      if (!imageQueries || imageQueries.length < 4) {
+      if (!imageQueries || imageQueries.length < 6) {
         const markerNames = (cleanedMarkers || []).map((m) => m.name);
-        imageQueries = fallbackImageQueries(name, base.narrative || "", markerNames);
+        imageQueries = fallbackImageQueries(name, markerNames);
       }
 
       const analysis = {
@@ -621,7 +711,7 @@ export async function POST(req: NextRequest) {
         .sort((a, b) => a.totalGroupUSD - b.totalGroupUSD),
     };
 
-    // Log useful bits for Vercel
+    // Useful logs for Vercel (inspect airfare quality & map pins quickly)
     console.log(`[plan ${reqId}] parsed slugs=`, summary.destinations.map((d) => d.slug));
     console.log(
       `[plan ${reqId}] coords preview=`,
@@ -629,6 +719,17 @@ export async function POST(req: NextRequest) {
         slug: d.slug,
         center: d.map_center || null,
         markers: (d.map_markers || []).length,
+      }))
+    );
+    console.log(
+      `[plan ${reqId}] fares preview=`,
+      parsed.destinations.map((d) => ({
+        slug: d.slug,
+        fares: d.per_traveler_fares.map((f) => ({
+          traveler: f.travelerName,
+          avg: f.avgUSD,
+          months: (f.monthBreakdown || []).map((m) => m.month),
+        })),
       }))
     );
     console.log(
@@ -652,7 +753,7 @@ export async function POST(req: NextRequest) {
         MODEL,
         parsed.final_recommendation,
         toJsonb(summary),
-        toJsonb(json), // normalized model output
+        toJsonb(json), // normalized model output incl. analysis
         toJsonb(parsed.group_fit ?? null),
       ]
     );
