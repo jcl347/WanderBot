@@ -1,304 +1,212 @@
 "use client";
 
-/* eslint-disable @next/next/no-img-element */
-import React from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
+import Head from "next/head";
 
-type CommonsImage = {
-  url: string;
-  title?: string;
-  source?: string;
-  width?: number;
-  height?: number;
-  license?: string;
-};
+// ---------- Types ----------
+type Img = { url: string; title?: string; source?: string; license?: string };
 
-type Props = {
-  /** If you already have explicit phrases (e.g., ["San Diego skyline", "Balboa Park"]) */
-  list?: string[];
-  /** A free-form sentence/paragraph like a micro-itinerary. We'll mine place names from it. */
-  query?: string;
-  /** Optional city name to prefix phrases for higher recall on Commons (e.g., "San Diego") */
-  city?: string;
-  /** Max images to render (default 10) */
-  count?: number;
-  /** Optional heading shown above the collage */
-  title?: string;
-  /** Optional footnote under the collage */
-  attributionNote?: string;
-  /** Compact mode (smaller thumbs) */
-  compact?: boolean;
-};
+type Props =
+  | { query: string; count?: number; city?: never; terms?: never; orientation?: "left" | "right" }
+  | { city?: string; terms: string[]; count?: number; query?: never; orientation?: "left" | "right" };
 
-/** Minimal stopwords so we don't glue in noise when building phrases */
-const STOPWORDS = new Set([
-  "the",
-  "a",
-  "an",
-  "and",
-  "or",
-  "of",
-  "at",
-  "in",
-  "on",
-  "to",
-  "from",
-  "for",
-  "with",
-  "by",
-  "near",
-  "into",
-  "onto",
-  "through",
-  "over",
-  "under",
-  "about",
-  "after",
-  "before",
-  "during",
-  "without",
-  "between",
-  "within",
-]);
+// ---------- Tiny cache so we don't re-fetch on route change ----------
+const memoryCache = new Map<string, Img[]>();
 
-/**
- * Extract capitalized phrases like “Balboa Park”, “La Jolla Cove”, “Gaslamp Quarter”
- * from free-form text. Returns 1–4 word spans that *look* like place names.
- */
-function extractCapitalizedPhrases(text: string): string[] {
-  if (!text) return [];
-  // Split sentences so we don’t bleed across punctuation
-  const chunks = text.split(/[\.\!\?;\n]+/).map((s) => s.trim()).filter(Boolean);
-
-  const phrases = new Set<string>();
-
-  for (const chunk of chunks) {
-    // Tokenize words (keep apostrophes and hyphens in names)
-    const words = chunk.match(/[A-Za-z][A-Za-z'\-]*/g) || [];
-    let run: string[] = [];
-
-    const flushRun = () => {
-      if (run.length === 0) return;
-      // A valid place-ish phrase is 1–5 tokens and not all stopwords
-      const allStop = run.every((w) => STOPWORDS.has(w.toLowerCase()));
-      if (!allStop && run.length <= 5) {
-        phrases.add(run.join(" "));
-      }
-      run = [];
-    };
-
-    for (const w of words) {
-      const isCaps =
-        /^[A-Z]/.test(w) || // starts uppercase
-        /^[A-Z][a-z]+$/.test(w) || // e.g., “Balboa”
-        /^[A-Z][a-z]+('[A-Z][a-z]+)?$/.test(w); // O'Something
-      if (isCaps && !STOPWORDS.has(w.toLowerCase())) {
-        run.push(w);
-      } else {
-        flushRun();
-      }
-    }
-    flushRun();
-  }
-
-  // Keep only 1–4 word spans (avoid entire sentence starts)
-  const cleaned = Array.from(phrases)
-    .map((p) => p.trim())
-    .filter(Boolean)
-    .filter((p) => {
-      const wc = p.split(/\s+/).length;
-      return wc >= 1 && wc <= 4;
-    });
-
-  // Deduplicate case-insensitively
-  const seen = new Set<string>();
-  const unique: string[] = [];
-  for (const p of cleaned) {
-    const k = p.toLowerCase();
-    if (!seen.has(k)) {
-      seen.add(k);
-      unique.push(p);
-    }
-  }
-  return unique;
+function cacheKey(p: Props) {
+  if ("query" in p) return `q:${p.query}|n:${p.count || 12}`;
+  const city = (p as any)?.city || "";
+  const terms = Array.isArray((p as any)?.terms) ? (p as any).terms.join(",") : "";
+  return `city:${city}|terms:${terms}|n:${p.count || 12}`;
 }
 
-/** Turn a `query` string (narrative) into short Commons queries, prefixed with city when present */
-function deriveQueriesFromQuery(query: string, city?: string, max = 12): string[] {
-  const phrases = extractCapitalizedPhrases(query);
-  const scoped = phrases.map((p) => (city ? `${city} ${p}` : p));
+// ---------- In-view hook (no deps) ----------
+function useInView<T extends HTMLElement>(rootMargin = "200px") {
+  const ref = useRef<T | null>(null);
+  const [isInView, setIsInView] = useState(false);
 
-  // Add a few generic city fallbacks so you always get something
-  const gen = city
-    ? [
-        `${city} skyline`,
-        `${city} downtown`,
-        `${city} landmarks`,
-        `${city} street art`,
-        `${city} festival`,
-        `${city} market`,
-        `${city} nightlife`,
-      ]
-    : [];
-
-  // Unique and cap
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const s of [...scoped, ...gen]) {
-    const k = s.trim().toLowerCase();
-    if (k && !seen.has(k)) {
-      seen.add(k);
-      out.push(s.trim());
-      if (out.length >= max) break;
-    }
-  }
-  return out;
-}
-
-async function commonsFetch(term: string, count: number): Promise<CommonsImage[]> {
-  const res = await fetch("/api/images", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ q: term, count }),
-  });
-  if (!res.ok) return [];
-  const data = await res.json().catch(() => ({ images: [] }));
-  return Array.isArray(data?.images) ? (data.images as CommonsImage[]) : [];
-}
-
-async function logClient(payload: any) {
-  try {
-    await fetch("/api/client-log", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    // ignore
-  }
-}
-
-export default function LivePhotoPane({
-  list,
-  query,
-  city,
-  count = 10,
-  title,
-  attributionNote,
-  compact,
-}: Props) {
-  const [images, setImages] = React.useState<CommonsImage[]>([]);
-  const [loading, setLoading] = React.useState<boolean>(true);
-
-  React.useEffect(() => {
-    let cancelled = false;
-
-    async function run() {
-      setLoading(true);
-
-      // 1) Build the search terms
-      let terms: string[] = [];
-      if (Array.isArray(list) && list.length) {
-        terms = list
-          .map((s) => String(s || ""))
-          .filter(Boolean)
-          .map((s) => (city ? `${city} ${s}` : s));
-      } else if (query) {
-        terms = deriveQueriesFromQuery(query, city, Math.max(count * 2, 12));
-      }
-
-      // Ensure we have something
-      if (!terms.length && city) {
-        terms = deriveQueriesFromQuery("", city, Math.max(count * 2, 12));
-      }
-
-      // 2) Fetch images term-by-term until we fill `count`
-      const picked: CommonsImage[] = [];
-      const tried: { term: string; got: number }[] = [];
-
-      for (const t of terms) {
-        if (picked.length >= count) break;
-        const remain = Math.min(6, count - picked.length); // pull a few per term
-        const got = await commonsFetch(t, remain);
-        tried.push({ term: t, got: got.length });
-
-        for (const im of got) {
-          // Deduplicate by URL
-          if (!picked.find((x) => x.url === im.url)) {
-            picked.push(im);
-            if (picked.length >= count) break;
+  useEffect(() => {
+    if (!ref.current) return;
+    const el = ref.current;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((e) => {
+          if (e.isIntersecting) {
+            setIsInView(true);
+            obs.disconnect();
           }
+        });
+      },
+      { root: null, rootMargin, threshold: 0.01 }
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  return { ref, isInView };
+}
+
+// ---------- Preload first few images ----------
+function PreloadLinks({ images }: { images: Img[] }) {
+  const first3 = images.slice(0, 3);
+  return (
+    <>
+      {/* Preconnect improves TLS warm-up for Commons */}
+      <link rel="preconnect" href="https://upload.wikimedia.org" crossOrigin="" />
+      {first3.map((im, i) => (
+        <link key={i} rel="preload" as="image" href={im.url} fetchPriority="high" />
+      ))}
+    </>
+  );
+}
+
+// ---------- Randomized grid helpers ----------
+const sizeClasses = [
+  // w,h spans for the CSS grid (more variety looks “collage-y”)
+  "col-span-2 row-span-2", // big
+  "col-span-2 row-span-1", // wide
+  "col-span-1 row-span-2", // tall
+  "col-span-1 row-span-1", // small
+];
+
+function pickSize(i: number) {
+  // deterministic “randomness” from index
+  const idx = (i * 9301 + 49297) % sizeClasses.length;
+  return sizeClasses[idx];
+}
+
+// ---------- Skeleton ----------
+function TileSkeleton() {
+  return (
+    <div className="animate-pulse bg-neutral-200/70 dark:bg-neutral-800/40 rounded-xl w-full h-full" />
+  );
+}
+
+// ---------- Component ----------
+export default function LivePhotoPane(props: Props) {
+  const count = Math.max(6, Math.min(props.count ?? 12, 20));
+  const key = useMemo(() => cacheKey(props), [props]);
+  const [images, setImages] = useState<Img[] | null>(memoryCache.get(key) ?? null);
+  const [loading, setLoading] = useState(!memoryCache.has(key));
+  const [err, setErr] = useState<string | null>(null);
+
+  const { ref, isInView } = useInView<HTMLDivElement>("200px");
+
+  useEffect(() => {
+    if (images || !isInView) return;
+
+    const controller = new AbortController();
+    const doFetch = async () => {
+      try {
+        setLoading(true);
+        setErr(null);
+
+        const body =
+          "query" in props
+            ? { q: props.query, count }
+            : { city: props.city || "", terms: props.terms, count };
+
+        const res = await fetch("/api/images", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+          cache: "no-store",
+          keepalive: true,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const list: Img[] = Array.isArray(data?.images) ? data.images : [];
+        memoryCache.set(key, list);
+        setImages(list);
+      } catch (e: any) {
+        if (e?.name !== "AbortError") {
+          setErr(e?.message || "Failed to load images");
         }
-      }
-
-      // 3) Log everything to Vercel
-      await logClient({
-        tag: "images",
-        city,
-        countRequested: count,
-        strategy: list?.length ? "explicit-list" : "extracted-from-query",
-        termsTried: tried,
-        returned: picked.map((p) => ({ url: p.url, title: p.title, license: p.license })),
-      });
-
-      if (!cancelled) {
-        setImages(picked);
+      } finally {
         setLoading(false);
       }
-    }
-
-    run();
-    return () => {
-      cancelled = true;
     };
-  }, [JSON.stringify(list), query, city, count]);
 
-  const grid = compact
-    ? "grid grid-cols-3 gap-2"
-    : "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3";
+    doFetch();
+    return () => controller.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isInView, key]);
+
+  // Build the grid items (bigger, varied)
+  const items = (images ?? []).slice(0, count);
 
   return (
-    <div className="rounded-xl border bg-white/60 p-3 md:p-4">
-      {title ? <h3 className="text-sm font-semibold mb-2">{title}</h3> : null}
-      <div className={grid}>
-        {loading &&
-          Array.from({ length: count }).map((_, i) => (
-            <div
-              key={`ph-${i}`}
-              className="aspect-[4/3] animate-pulse rounded-lg bg-neutral-200"
-            />
-          ))}
-        {!loading &&
-          images.map((im, i) => (
-            <a
-              key={im.url + i}
-              href={im.source || im.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="block group"
-              title={im.title || ""}
-            >
-              <div className="aspect-[4/3] overflow-hidden rounded-lg border bg-white">
-                <img
-                  src={im.url}
-                  alt={im.title || "Photo"}
-                  className="h-full w-full object-cover transition-transform group-hover:scale-105"
-                  loading="lazy"
-                />
+    <div ref={ref} className="relative">
+      <Head>
+        {/* Preload the first few actual images once we have them */}
+        {images && images.length > 0 ? <PreloadLinks images={images} /> : null}
+      </Head>
+
+      <div
+        className={[
+          // Masonry-ish responsive grid on each side rail
+          "grid gap-3",
+          "grid-cols-3 auto-rows-[110px]",
+          "sm:grid-cols-4 sm:auto-rows-[120px]",
+          "lg:grid-cols-5 lg:auto-rows-[140px]",
+        ].join(" ")}
+      >
+        {/* Loading skeleton */}
+        {loading && !images && (
+          <>
+            {Array.from({ length: 10 }).map((_, i) => (
+              <div
+                key={`sk-${i}`}
+                className={`rounded-xl overflow-hidden ${pickSize(i)} min-h-[100px]`}
+              >
+                <TileSkeleton />
               </div>
-              {im.title ? (
-                <div className="mt-1 text-[11px] text-neutral-600 line-clamp-1">
-                  {im.title.replace(/^File:/i, "")}
-                </div>
-              ) : null}
-            </a>
-          ))}
-        {!loading && images.length === 0 && (
-          <div className="text-sm text-neutral-500">No images found.</div>
+            ))}
+          </>
         )}
+
+        {/* Error state */}
+        {err && !loading && (
+          <div className="col-span-full text-sm text-red-600">
+            Couldn’t load images: {err}
+          </div>
+        )}
+
+        {/* Real images */}
+        {items.map((im, i) => (
+          <div
+            key={im.url || i}
+            className={[
+              "relative overflow-hidden rounded-2xl",
+              "bg-neutral-100 dark:bg-neutral-900",
+              "shadow-sm",
+              pickSize(i),
+            ].join(" ")}
+          >
+            <Image
+              src={im.url}
+              alt={im.title || "Destination photo"}
+              fill
+              sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 20vw"
+              priority={i < 2}                 // boost first couple
+              loading={i < 2 ? "eager" : "lazy"}
+              decoding="async"
+              style={{ objectFit: "cover" }}
+              // If your next.config doesn’t allow Commons yet, add:
+              // images: { remotePatterns: [{ protocol: 'https', hostname: 'upload.wikimedia.org' }] }
+              unoptimized
+            />
+            {/* subtle overlay title for accessibility / context (optional) */}
+            {im.title ? (
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/40 to-transparent p-2">
+                <div className="text-xs text-white/90 line-clamp-1">{im.title.replace(/^File:/, "")}</div>
+              </div>
+            ) : null}
+          </div>
+        ))}
       </div>
-      {attributionNote ? (
-        <div className="mt-2 text-[11px] text-neutral-500">{attributionNote}</div>
-      ) : null}
     </div>
   );
 }
