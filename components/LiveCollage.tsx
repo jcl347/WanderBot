@@ -46,12 +46,7 @@ export default function LiveCollage({
       {/* Left rail */}
       <div className="order-2 md:order-1">
         {lq ? (
-          <LivePhotoPane
-            query={lq}
-            count={leftCount}
-            title=""
-            attributionNote=""
-          />
+          <LivePhotoPane query={lq} count={leftCount} />
         ) : (
           <div className="hidden md:block h-full rounded-xl border bg-white/50" />
         )}
@@ -63,12 +58,7 @@ export default function LiveCollage({
       {/* Right rail */}
       <div className="order-3">
         {rq ? (
-          <LivePhotoPane
-            query={rq}
-            count={rightCount}
-            title=""
-            attributionNote=""
-          />
+          <LivePhotoPane query={rq} count={rightCount} />
         ) : (
           <div className="hidden md:block h-full rounded-xl border bg-white/50" />
         )}
