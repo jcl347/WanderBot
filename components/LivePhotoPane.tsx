@@ -1,212 +1,211 @@
+// components/LivePhotoPane.tsx
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
-import Head from "next/head";
 
-// ---------- Types ----------
-type Img = { url: string; title?: string; source?: string; license?: string };
+type ApiImage = {
+  url: string;
+  title?: string;
+  source?: string;
+  license?: string;
+};
 
-type Props =
-  | { query: string; count?: number; city?: never; terms?: never; orientation?: "left" | "right" }
-  | { city?: string; terms: string[]; count?: number; query?: never; orientation?: "left" | "right" };
+type Props = {
+  query: string;
+  count?: number;
+  /** purely for subtle style shifts if you want them */
+  orientation?: "left" | "right";
+  /** when to trigger fetching; keep stable/memoized to avoid lint warnings */
+  rootMargin?: string;
+  className?: string;
+};
 
-// ---------- Tiny cache so we don't re-fetch on route change ----------
-const memoryCache = new Map<string, Img[]>();
-
-function cacheKey(p: Props) {
-  if ("query" in p) return `q:${p.query}|n:${p.count || 12}`;
-  const city = (p as any)?.city || "";
-  const terms = Array.isArray((p as any)?.terms) ? (p as any).terms.join(",") : "";
-  return `city:${city}|terms:${terms}|n:${p.count || 12}`;
+function cx(...xs: Array<string | false | null | undefined>) {
+  return xs.filter(Boolean).join(" ");
 }
 
-// ---------- In-view hook (no deps) ----------
-function useInView<T extends HTMLElement>(rootMargin = "200px") {
-  const ref = useRef<T | null>(null);
-  const [isInView, setIsInView] = useState(false);
+/** simple <img> fallback, rarely used once next.config images are set */
+function RawImg({
+  src,
+  alt,
+  priority,
+}: {
+  src: string;
+  alt: string;
+  priority?: boolean;
+}) {
+  return (
+    // width/height attributes help prevent CLS even in fallback
+    <img
+      src={src}
+      alt={alt}
+      loading={priority ? "eager" : "lazy"}
+      decoding="async"
+      className="absolute inset-0 h-full w-full object-cover rounded-xl"
+    />
+  );
+}
+
+export default function LivePhotoPane({
+  query,
+  count = 10,
+  orientation,
+  rootMargin = "200px",
+  className = "",
+}: Props) {
+  const [imgs, setImgs] = useState<ApiImage[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [fetched, setFetched] = useState(false);
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  // keep this stable to quiet the lint rule
+  const memoRootMargin = useMemo(() => rootMargin, [rootMargin]);
 
   useEffect(() => {
     if (!ref.current) return;
+    let cancelled = false;
+
     const el = ref.current;
     const obs = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((e) => {
-          if (e.isIntersecting) {
-            setIsInView(true);
-            obs.disconnect();
+      async (entries) => {
+        const vis = entries.some((e) => e.isIntersecting);
+        if (!vis || cancelled || fetched) return;
+
+        try {
+          setFetched(true);
+          const res = await fetch("/api/images", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ q: query, count }),
+            cache: "no-store",
+          });
+          if (!res.ok) {
+            setErr(`HTTP ${res.status}`);
+            return;
           }
-        });
-      },
-      { root: null, rootMargin, threshold: 0.01 }
-    );
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, []);
-
-  return { ref, isInView };
-}
-
-// ---------- Preload first few images ----------
-function PreloadLinks({ images }: { images: Img[] }) {
-  const first3 = images.slice(0, 3);
-  return (
-    <>
-      {/* Preconnect improves TLS warm-up for Commons */}
-      <link rel="preconnect" href="https://upload.wikimedia.org" crossOrigin="" />
-      {first3.map((im, i) => (
-        <link key={i} rel="preload" as="image" href={im.url} fetchPriority="high" />
-      ))}
-    </>
-  );
-}
-
-// ---------- Randomized grid helpers ----------
-const sizeClasses = [
-  // w,h spans for the CSS grid (more variety looks “collage-y”)
-  "col-span-2 row-span-2", // big
-  "col-span-2 row-span-1", // wide
-  "col-span-1 row-span-2", // tall
-  "col-span-1 row-span-1", // small
-];
-
-function pickSize(i: number) {
-  // deterministic “randomness” from index
-  const idx = (i * 9301 + 49297) % sizeClasses.length;
-  return sizeClasses[idx];
-}
-
-// ---------- Skeleton ----------
-function TileSkeleton() {
-  return (
-    <div className="animate-pulse bg-neutral-200/70 dark:bg-neutral-800/40 rounded-xl w-full h-full" />
-  );
-}
-
-// ---------- Component ----------
-export default function LivePhotoPane(props: Props) {
-  const count = Math.max(6, Math.min(props.count ?? 12, 20));
-  const key = useMemo(() => cacheKey(props), [props]);
-  const [images, setImages] = useState<Img[] | null>(memoryCache.get(key) ?? null);
-  const [loading, setLoading] = useState(!memoryCache.has(key));
-  const [err, setErr] = useState<string | null>(null);
-
-  const { ref, isInView } = useInView<HTMLDivElement>("200px");
-
-  useEffect(() => {
-    if (images || !isInView) return;
-
-    const controller = new AbortController();
-    const doFetch = async () => {
-      try {
-        setLoading(true);
-        setErr(null);
-
-        const body =
-          "query" in props
-            ? { q: props.query, count }
-            : { city: props.city || "", terms: props.terms, count };
-
-        const res = await fetch("/api/images", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-          signal: controller.signal,
-          cache: "no-store",
-          keepalive: true,
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        const list: Img[] = Array.isArray(data?.images) ? data.images : [];
-        memoryCache.set(key, list);
-        setImages(list);
-      } catch (e: any) {
-        if (e?.name !== "AbortError") {
-          setErr(e?.message || "Failed to load images");
+          const data = (await res.json()) as { images?: ApiImage[] };
+          setImgs(Array.isArray(data.images) ? data.images : []);
+        } catch (e: any) {
+          setErr(e?.message || "fetch_failed");
         }
-      } finally {
-        setLoading(false);
-      }
+      },
+      { rootMargin: memoRootMargin }
+    );
+
+    obs.observe(el);
+    return () => {
+      cancelled = true;
+      obs.disconnect();
     };
+  }, [query, count, memoRootMargin, fetched]);
 
-    doFetch();
-    return () => controller.abort();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isInView, key]);
-
-  // Build the grid items (bigger, varied)
-  const items = (images ?? []).slice(0, count);
-
-  return (
-    <div ref={ref} className="relative">
-      <Head>
-        {/* Preload the first few actual images once we have them */}
-        {images && images.length > 0 ? <PreloadLinks images={images} /> : null}
-      </Head>
-
+  // Skeleton while waiting to intersect/fetch
+  if (!imgs) {
+    return (
       <div
-        className={[
-          // Masonry-ish responsive grid on each side rail
-          "grid gap-3",
-          "grid-cols-3 auto-rows-[110px]",
-          "sm:grid-cols-4 sm:auto-rows-[120px]",
-          "lg:grid-cols-5 lg:auto-rows-[140px]",
-        ].join(" ")}
+        ref={ref}
+        className={cx(
+          "grid grid-cols-2 gap-2 md:gap-3 auto-rows-[120px] md:auto-rows-[140px]",
+          className
+        )}
       >
-        {/* Loading skeleton */}
-        {loading && !images && (
-          <>
-            {Array.from({ length: 10 }).map((_, i) => (
-              <div
-                key={`sk-${i}`}
-                className={`rounded-xl overflow-hidden ${pickSize(i)} min-h-[100px]`}
-              >
-                <TileSkeleton />
-              </div>
-            ))}
-          </>
-        )}
-
-        {/* Error state */}
-        {err && !loading && (
-          <div className="col-span-full text-sm text-red-600">
-            Couldn’t load images: {err}
-          </div>
-        )}
-
-        {/* Real images */}
-        {items.map((im, i) => (
+        {Array.from({ length: 6 }).map((_, i) => (
           <div
-            key={im.url || i}
-            className={[
-              "relative overflow-hidden rounded-2xl",
-              "bg-neutral-100 dark:bg-neutral-900",
-              "shadow-sm",
-              pickSize(i),
-            ].join(" ")}
-          >
-            <Image
-              src={im.url}
-              alt={im.title || "Destination photo"}
-              fill
-              sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 20vw"
-              priority={i < 2}                 // boost first couple
-              loading={i < 2 ? "eager" : "lazy"}
-              decoding="async"
-              style={{ objectFit: "cover" }}
-              // If your next.config doesn’t allow Commons yet, add:
-              // images: { remotePatterns: [{ protocol: 'https', hostname: 'upload.wikimedia.org' }] }
-              unoptimized
-            />
-            {/* subtle overlay title for accessibility / context (optional) */}
-            {im.title ? (
-              <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/40 to-transparent p-2">
-                <div className="text-xs text-white/90 line-clamp-1">{im.title.replace(/^File:/, "")}</div>
-              </div>
-            ) : null}
-          </div>
+            key={i}
+            className={cx(
+              "rounded-xl bg-neutral-200/70 animate-pulse",
+              i % 5 === 0 && "col-span-2",
+              i % 7 === 0 && "row-span-2"
+            )}
+          />
         ))}
       </div>
+    );
+  }
+
+  // Empty state
+  if (imgs.length === 0) {
+    return (
+      <div
+        className={cx(
+          "rounded-xl border bg-white/60 text-sm text-neutral-500 p-4",
+          className
+        )}
+        ref={ref}
+      >
+        No images found for <span className="font-medium">“{query}”</span>.
+      </div>
+    );
+  }
+
+  // Collage grid:
+  // - explicit auto-rows height guarantees non-zero height for fill images
+  // - varied spans make a mosaic
+  return (
+    <div
+      ref={ref}
+      className={cx(
+        "grid grid-cols-2 gap-2 md:gap-3 auto-rows-[120px] md:auto-rows-[140px]",
+        className
+      )}
+      aria-label={`image collage ${orientation ?? ""}`.trim()}
+    >
+      {imgs.slice(0, count).map((im, i) => {
+        // pattern the spans for a lively layout
+        const span =
+          i % 7 === 0
+            ? "col-span-2"
+            : i % 5 === 0
+            ? "row-span-2"
+            : undefined;
+
+        const priority = i < 3; // preload a few for snappy LCP
+        const alt = im.title || `Photo ${i + 1}`;
+
+        return (
+          <figure
+            key={im.url + i}
+            className={cx(
+              "relative rounded-xl overflow-hidden shadow-sm bg-neutral-100",
+              // give each item height via auto-rows + (optional) row/col spans
+              span
+            )}
+          >
+            {/* Keep an intrinsic area with aspect if this card spans both columns */}
+            <div className="absolute inset-0" />
+            {/* Prefer next/image; if domain config is missing, it’ll error in dev — fallback <img> keeps UI alive */}
+            <Image
+              src={im.url}
+              alt={alt}
+              fill
+              sizes="(min-width: 768px) 260px, 50vw"
+              priority={priority}
+              loading={priority ? "eager" : "lazy"}
+              decoding="async"
+              className="object-cover"
+              onError={(e) => {
+                const el = (e.target as HTMLImageElement).parentElement;
+                if (!el) return;
+                // Replace with a raw <img> fallback
+                el.innerHTML = "";
+                const fallback = document.createElement("img");
+                fallback.src = im.url;
+                fallback.alt = alt;
+                fallback.loading = priority ? "eager" : "lazy";
+                fallback.decoding = "async";
+                fallback.className = "absolute inset-0 h-full w-full object-cover rounded-xl";
+                el.appendChild(fallback);
+              }}
+            />
+            {/* Optional tiny overlay – license/source if you want it visible
+            <figcaption className="absolute bottom-0 left-0 right-0 bg-black/30 text-[10px] text-white px-1 py-0.5 truncate">
+              {im.license || ""}{im.source ? " • " : ""}{im.source ? "Wikimedia" : ""}
+            </figcaption>
+            */}
+          </figure>
+        );
+      })}
     </div>
   );
 }
