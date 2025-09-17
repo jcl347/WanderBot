@@ -21,7 +21,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     ? dest.per_traveler_fares
     : [];
 
-  // ---------- Build months & line series ----------
+  // ---------- Months & series ----------
   const monthSet = new Set<string>();
   for (const f of fares) {
     for (const m of f.monthBreakdown || []) {
@@ -31,7 +31,6 @@ export default function DestDetailClient({ dest }: { dest: any }) {
 
   let months = Array.from(monthSet).sort();
   if (months.length === 0) {
-    // fabricate a 3-month band around suggested/best month so the chart never looks empty
     const base = String(dest.best_month || dest.suggested_month || "2026-01").slice(0, 7);
     const [y, m] = base.split("-").map((x: string) => Number(x));
     const trio = [new Date(y, m - 2, 1), new Date(y, m - 1, 1), new Date(y, m, 1)];
@@ -51,7 +50,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     return row;
   });
 
-  // ---------- Map: always produce at least one pin ----------
+  // ---------- Map (always at least one pin) ----------
   const analysis = dest?.analysis ?? {};
   const rawMarkers: Marker[] = Array.isArray(analysis.map_markers)
     ? (analysis.map_markers as Marker[])
@@ -86,18 +85,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     ? [mc.lat, mc.lon]
     : pins[0]?.position;
 
-  if (process.env.NODE_ENV !== "production") {
-    console.log("[dest-detail] map", {
-      dest: dest?.slug || dest?.name,
-      rawMarkers: rawMarkers.length,
-      finalPins: pins.length,
-      hasCenter,
-      center,
-    });
-  }
-
-  // ---------- Build image query phrase lists ----------
-  // Prefer model-provided targeted phrases
+  // ---------- Image query lists ----------
   const modelQueries: string[] = Array.isArray(analysis.image_queries)
     ? analysis.image_queries.filter((s: unknown) => typeof s === "string" && s.trim())
     : [];
@@ -110,7 +98,6 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     leftList = modelQueries.slice(0, mid);
     rightList = modelQueries.slice(mid);
   } else {
-    // Fallback phrases: landmarks/skyline on the left, lifestyle on the right
     const markerNames: string[] = rawMarkers
       .map((m) => (typeof m?.name === "string" ? m.name : ""))
       .filter(Boolean);
@@ -130,24 +117,15 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     ];
   }
 
-  // If your LiveCollage has different prop names in different branches,
-  // this keeps the build green while still working at runtime.
-  const collage =
-    // @ts-expect-error — allow either "leftList/rightList" or "leftQuery/rightQuery" prop shapes
-    <LiveCollage
-      leftList={leftList}
-      rightList={rightList}
-      /* If your LiveCollage expects single strings, it can read these too */
-      leftQuery={leftList.join(" ")}
-      rightQuery={rightList.join(" ")}
-      leftCount={10}
-      rightCount={10}
-    />;
-
   return (
     <>
-      {/* Photo rails */}
-      {collage}
+      {/* Photo rails — LiveCollage expects lists of short phrases */}
+      <LiveCollage
+        leftList={leftList}
+        rightList={rightList}
+        leftCount={10}
+        rightCount={10}
+      />
 
       {/* Middle analytics/content column */}
       <div className="md:col-start-2 md:row-start-1 md:px-0 space-y-4">
@@ -158,7 +136,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
 
         <SectionCard>
           <h2 className="text-lg font-semibold mb-3">Monthly notes</h2>
-        {dest.months?.length ? (
+          {dest.months?.length ? (
             <ul className="list-disc pl-6 text-sm">
               {dest.months.map((m: any) => (
                 <li key={m.month}>
