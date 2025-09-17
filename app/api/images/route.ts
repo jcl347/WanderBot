@@ -1,20 +1,12 @@
 // app/api/images/route.ts
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 
-// ---- simple helpers ----
-const HEAD_TIMEOUT_MS = 6000;
-const MAX_PER_QUERY = 30;
+export const runtime = "nodejs";
 
-function uniq<T>(arr: T[]) {
-  return Array.from(new Set(arr));
-}
-
-async function headOk(url: string): Promise<boolean> {
+// Utility: HEAD verify it's an image
+async function verifyImage(url: string): Promise<boolean> {
   try {
-    const ctl = new AbortController();
-    const id = setTimeout(() => ctl.abort(), HEAD_TIMEOUT_MS);
-    const res = await fetch(url, { method: "HEAD", signal: ctl.signal });
-    clearTimeout(id);
+    const res = await fetch(url, { method: "HEAD", cache: "no-store" });
     if (!res.ok) return false;
     const ct = res.headers.get("content-type") || "";
     return ct.startsWith("image/");
@@ -23,116 +15,89 @@ async function headOk(url: string): Promise<boolean> {
   }
 }
 
-// ---- DuckDuckGo images (no API key). We obtain vqd and call i.js ----
-async function ddgImages(query: string, count: number): Promise<string[]> {
-  try {
-    const home = await fetch(
-      "https://duckduckgo.com/?q=" + encodeURIComponent(query),
-      { headers: { "user-agent": "Mozilla/5.0" } }
-    );
-    const html = await home.text();
-    const m = html.match(/vqd='([^']+)'/);
-    if (!m) {
-      console.log("[images:ddg] no vqd for query:", query);
-      return [];
-    }
-    const vqd = m[1];
-    const api = `https://duckduckgo.com/i.js?l=us-en&o=json&q=${encodeURIComponent(
-      query
-    )}&vqd=${encodeURIComponent(vqd)}&f=,,,&p=1`;
-    const r = await fetch(api, { headers: { "user-agent": "Mozilla/5.0" } });
-    if (!r.ok) {
-      console.log("[images:ddg] i.js bad status:", r.status, query);
-      return [];
-    }
-    const j = await r.json();
-    const urls: string[] = Array.isArray(j?.results)
-      ? j.results
-          .map((x: any) => x?.image || x?.thumbnail || x?.url)
-          .filter((u: string) => typeof u === "string")
-      : [];
-    return urls.slice(0, count);
-  } catch (err: any) {
-    console.log("[images:ddg] error", err?.message || err);
+type CommonsImage = {
+  url: string;
+  title?: string;
+  source?: string;
+  width?: number;
+  height?: number;
+  license?: string;
+};
+
+async function commonsSearch(q: string, count: number): Promise<CommonsImage[]> {
+  const reqId = Math.random().toString(36).slice(2, 8);
+  const u = new URL("https://commons.wikimedia.org/w/api.php");
+  // We bias to photographic content and get a large set then trim.
+  u.searchParams.set("action", "query");
+  u.searchParams.set("format", "json");
+  u.searchParams.set("prop", "imageinfo");
+  u.searchParams.set("generator", "search");
+  // Encourage photo-ish results; you can tune this string.
+  u.searchParams.set("gsrsearch", `${q} filetype:bitmap`);
+  u.searchParams.set("gsrlimit", String(Math.min(50, Math.max(count * 4, 20))));
+  u.searchParams.set("iiprop", "url|size|mime|extmetadata");
+  u.searchParams.set("iiurlwidth", "1600"); // decent thumbs
+  u.searchParams.set("origin", "*");
+
+  console.log(`[images ${reqId}] commons query=`, q);
+  const res = await fetch(u.toString(), { cache: "no-store" });
+  if (!res.ok) {
+    console.log(`[images ${reqId}] commons status=`, res.status);
     return [];
   }
+  const data = await res.json();
+  const pages: any[] = Object.values(data?.query?.pages ?? {});
+  console.log(
+    `[images ${reqId}] commons raw pages=${pages.length} (pre-filter)`
+  );
+
+  const out: CommonsImage[] = [];
+  for (const p of pages) {
+    const ii = p?.imageinfo?.[0];
+    const url = ii?.thumburl || ii?.url;
+    const mime = (ii?.mime ?? "").toLowerCase();
+    if (!url || !mime.startsWith("image/")) continue;
+
+    const item: CommonsImage = {
+      url,
+      title: p?.title,
+      source:
+        "https://commons.wikimedia.org/wiki/" +
+        encodeURIComponent(p?.title || ""),
+      width: ii?.thumbwidth ?? ii?.width,
+      height: ii?.thumbheight ?? ii?.height,
+      license: ii?.extmetadata?.LicenseShortName?.value,
+    };
+
+    // Optional but helpful: HEAD verify once to avoid broken links.
+    const ok = await verifyImage(item.url);
+    if (!ok) continue;
+
+    out.push(item);
+    if (out.length >= count) break;
+  }
+
+  console.log(
+    `[images ${reqId}] commons verified=${out.length}/${count} (returning)`
+  );
+  return out;
 }
 
-// ---- Wikimedia Commons search (no key) ----
-async function commonsImages(query: string, count: number): Promise<string[]> {
+export async function POST(req: Request) {
+  const reqId = Math.random().toString(36).slice(2, 8);
   try {
-    const api =
-      "https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=" +
-      encodeURIComponent(query) +
-      "&gsrlimit=" +
-      Math.min(count, MAX_PER_QUERY) +
-      "&prop=imageinfo&iiprop=url&format=json&origin=*";
-    const r = await fetch(api, { headers: { "user-agent": "Mozilla/5.0" } });
-    if (!r.ok) return [];
-    const j = await r.json();
-    const pages = j?.query?.pages || {};
-    const urls: string[] = Object.values(pages)
-      .map((p: any) => p?.imageinfo?.[0]?.url)
-      .filter((u: string) => typeof u === "string");
-    return urls.slice(0, count);
-  } catch {
-    return [];
+    const body = await req.json().catch(() => ({} as any));
+    const q = String(body?.q ?? "").trim();
+    const count = Number(body?.count ?? 12);
+    if (!q) {
+      console.log(`[images ${reqId}] missing q`);
+      return NextResponse.json({ images: [] });
+    }
+
+    const images = await commonsSearch(q, Math.max(1, Math.min(count, 24)));
+    return NextResponse.json({ images });
+  } catch (e: any) {
+    console.error(`[images] error:`, e?.message || e);
+    return NextResponse.json({ images: [] }, { status: 500 });
   }
 }
-
-export async function POST(req: NextRequest) {
-  const t0 = Date.now();
-  try {
-    const body = await req.json().catch(() => ({}));
-    const queries: string[] = Array.isArray(body?.queries)
-      ? body.queries.filter(Boolean)
-      : [];
-    const count = Math.min(Number(body?.count ?? 20), MAX_PER_QUERY);
-
-    if (queries.length === 0) {
-      return NextResponse.json(
-        { error: "Missing queries[]" },
-        { status: 400 }
-      );
-    }
-
-    console.log("[images:request] start", {
-      queriesCount: queries.length,
-      count,
-    });
-
-    // For each query: try DDG, else Commons
-    const all: string[] = [];
-    for (const q of queries) {
-      const ddg = await ddgImages(q, count);
-      const got = ddg.length ? ddg : await commonsImages(q, count);
-      all.push(...got);
-      console.log("[images:q]", q, { ddg: ddg.length, commons: got.length });
-    }
-
-    // Dedup and verify
-    const unique = uniq(all).slice(0, 80); // cap before HEAD checks
-    const verified: string[] = [];
-    for (const u of unique) {
-      if (verified.length >= queries.length * count) break;
-      if (await headOk(u)) verified.push(u);
-    }
-
-    console.log("[images:response] done", {
-      requested: queries.length * count,
-      combined_raw: all.length,
-      verified: verified.length,
-      ms: Date.now() - t0,
-    });
-
-    return NextResponse.json({ images: verified });
-  } catch (err: any) {
-    console.error("[/api/images] fatal", err?.message || err);
-    return NextResponse.json(
-      { error: err?.message || "unknown" },
-      { status: 500 }
-    );
-  }
-}
-
-export const runtime = "edge";

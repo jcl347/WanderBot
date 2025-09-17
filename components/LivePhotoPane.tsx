@@ -1,145 +1,126 @@
+// components/LivePhotoPane.tsx
 "use client";
 
 import React from "react";
 
-type Props = {
-  query: string;
-  count?: number;
-  title?: string;
-  attributionNote?: string;
-  /** Optional – accepted but unused, so callers passing it won't break types */
-  orientation?: "left" | "right";
-};
-
-type ImageItem = {
+type Img = {
   url: string;
   title?: string;
   source?: string;
   width?: number;
   height?: number;
+  license?: string;
+};
+
+type Props = {
+  /** Single search string, e.g. "Austin skyline Zilker Park live music". */
+  query: string;
+  /** How many images to try to show. */
+  count?: number;
+  /** Optional title at the top of this pane. */
+  title?: string;
+  /** Small note shown at the bottom (e.g., attribution). */
+  attributionNote?: string;
 };
 
 export default function LivePhotoPane({
   query,
   count = 10,
   title,
-  attributionNote = "Images from DuckDuckGo/Wikimedia (hotlink-safe where available).",
+  attributionNote = "Photos via Wikimedia Commons",
 }: Props) {
-  const [items, setItems] = React.useState<ImageItem[] | null>(null);
-  const [state, setState] = React.useState<"idle" | "loading" | "done" | "error">(
-    "idle"
-  );
+  const [imgs, setImgs] = React.useState<Img[] | null>(null);
+  const [err, setErr] = React.useState<string | null>(null);
+  const [loading, setLoading] = React.useState(false);
 
   React.useEffect(() => {
-    let dead = false;
-
+    let cancelled = false;
     async function run() {
+      const reqId = Math.random().toString(36).slice(2, 8);
       try {
-        setState("loading");
-        // Client log → server (so you see it in Vercel)
-        try {
-          await fetch("/api/client-log", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              scope: "images:request",
-              q: query,
-              count,
-            }),
-          });
-        } catch {}
-
+        setLoading(true);
+        setErr(null);
+        setImgs(null);
+        console.log(`[live-pane ${reqId}] fetch start:`, { query, count });
         const res = await fetch("/api/images", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ q: query, count }),
+          cache: "no-store",
         });
-
         if (!res.ok) {
-          setState("error");
-          // Log failure
-          try {
-            await fetch("/api/client-log", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                scope: "images:error",
-                status: res.status,
-                q: query,
-              }),
-            });
-          } catch {}
-          return;
+          const t = await res.text();
+          console.log(`[live-pane ${reqId}] error status=${res.status} body=${t}`);
+          throw new Error(`images ${res.status}`);
         }
-
-        const data = await res.json();
-        if (dead) return;
-
-        const list: ImageItem[] = Array.isArray(data?.images) ? data.images : [];
-        setItems(list);
-        setState("done");
-
-        // success log with counts
-        try {
-          await fetch("/api/client-log", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              scope: "images:response",
-              q: query,
-              requested: count,
-              returned: list.length,
-            }),
-          });
-        } catch {}
-      } catch (e) {
-        setState("error");
+        const json = await res.json();
+        if (cancelled) return;
+        setImgs(Array.isArray(json.images) ? json.images : []);
+        console.log(`[live-pane ${reqId}] ok images=${json.images?.length ?? 0}`);
+      } catch (e: any) {
+        if (!cancelled) setErr(e?.message || "failed");
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     }
-
     if (query && query.trim()) run();
     return () => {
-      dead = true;
+      cancelled = true;
     };
   }, [query, count]);
 
-  const empty = state === "done" && (!items || items.length === 0);
-
   return (
-    <div className="rounded-xl border bg-white/50">
+    <div className="rounded-xl border bg-white/50 p-2 h-[360px] overflow-hidden flex flex-col">
       {title ? (
-        <div className="px-3 py-2 border-b font-medium text-sm">{title}</div>
+        <div className="text-sm font-medium text-neutral-700 px-1 pb-1">
+          {title}
+        </div>
       ) : null}
 
-      {/* content area */}
-      <div className="p-2">
-        {state === "loading" ? (
-          <div className="text-sm text-neutral-500 p-2">Loading images…</div>
-        ) : empty ? (
-          <div className="text-sm text-neutral-500 p-2">No live images found.</div>
-        ) : (
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-1">
-            {(items || []).slice(0, count).map((img, i) => (
-              <div
-                key={i}
-                className="aspect-[4/3] overflow-hidden rounded-lg border bg-white/60"
-                title={img.title || ""}
+      <div className="relative flex-1 overflow-auto">
+        {!imgs && !err && loading && (
+          <div className="h-full grid place-items-center text-sm text-neutral-500">
+            Loading images…
+          </div>
+        )}
+
+        {err && (
+          <div className="h-full grid place-items-center text-sm text-rose-600">
+            {err}
+          </div>
+        )}
+
+        {imgs && imgs.length === 0 && (
+          <div className="h-full grid place-items-center text-sm text-neutral-500">
+            No live images found.
+          </div>
+        )}
+
+        {imgs && imgs.length > 0 && (
+          <div className="columns-2 gap-2 [column-fill:_balance]">
+            {imgs.map((im, i) => (
+              <a
+                key={`${im.url}-${i}`}
+                href={im.source || im.url}
+                target="_blank"
+                rel="noreferrer"
+                className="break-inside-avoid block mb-2"
+                title={im.title || undefined}
               >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
+                {/* using native img keeps it simple and works cross-origin */}
                 <img
-                  src={img.url}
-                  alt={img.title || "photo"}
-                  className="h-full w-full object-cover"
+                  src={im.url}
+                  alt={im.title || "photo"}
+                  className="w-full rounded-lg border bg-white/40 object-cover"
                   loading="lazy"
-                  referrerPolicy="no-referrer"
                 />
-              </div>
+              </a>
             ))}
           </div>
         )}
       </div>
 
-      <div className="px-3 pb-2 text-[11px] text-neutral-500">
+      <div className="pt-1 text-[11px] text-neutral-500 px-1">
         {attributionNote}
       </div>
     </div>
