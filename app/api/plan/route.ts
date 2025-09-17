@@ -627,8 +627,8 @@ export async function POST(req: NextRequest) {
       `[plan ${reqId}] coords preview=`,
       parsed.destinations.map((d) => ({
         slug: d.slug,
-        center: d.map_center || d.analysis?.map_center || null,
-        markers: (d.map_markers || d.analysis?.map_markers || []).length,
+        center: d.map_center || null,
+        markers: (d.map_markers || []).length,
       }))
     );
     console.log(
