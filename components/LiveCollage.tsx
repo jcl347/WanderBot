@@ -1,30 +1,23 @@
-// components/LiveCollage.tsx
 "use client";
 
 import React from "react";
 import LivePhotoPane from "./LivePhotoPane";
 
 type Props = {
-  // Accept either a single query or a list of short phrases.
-  // If both are provided, the single query wins.
   leftQuery?: string;
   rightQuery?: string;
   leftList?: string[];
   rightList?: string[];
-
   leftCount?: number;
   rightCount?: number;
+  railWidth?: number;     // px, default 380
   className?: string;
 };
 
-/**
- * Keep Wikimedia search simple. If a list is provided,
- * we take the FIRST non-empty phrase only (e.g., "Miami South Beach").
- */
-function pickSimpleQuery(list?: string[]): string {
-  if (!Array.isArray(list)) return "";
-  for (const s of list) {
-    if (typeof s === "string" && s.trim()) return s.trim();
+function toQuery(query?: string, list?: string[]) {
+  if (query && query.trim()) return query.trim();
+  if (Array.isArray(list) && list.length) {
+    return list.filter((s) => typeof s === "string" && s.trim()).join(" ").trim();
   }
   return "";
 }
@@ -34,17 +27,20 @@ export default function LiveCollage({
   rightQuery,
   leftList,
   rightList,
-  leftCount = 10,
-  rightCount = 10,
+  leftCount = 12,
+  rightCount = 12,
+  railWidth = 380,
   className = "",
 }: Props) {
-  const lq = (leftQuery && leftQuery.trim()) || pickSimpleQuery(leftList);
-  const rq = (rightQuery && rightQuery.trim()) || pickSimpleQuery(rightList);
+  const lq = toQuery(leftQuery, leftList);
+  const rq = toQuery(rightQuery, rightList);
+
+  // clamp rail width
+  const w = Math.max(260, Math.min(560, railWidth));
+  const cols = `[${w}px_minmax(0,1fr)_[${w}px]]`;
 
   return (
-    <div
-      className={`relative grid grid-cols-1 md:grid-cols-[260px_minmax(0,1fr)_260px] gap-4 md:gap-6 ${className}`}
-    >
+    <div className={`relative grid grid-cols-1 md:grid-cols-[${w}px_minmax(0,1fr)_${w}px] gap-6 ${className}`}>
       {/* Left rail */}
       <div className="order-2 md:order-1">
         {lq ? (
@@ -54,7 +50,7 @@ export default function LiveCollage({
         )}
       </div>
 
-      {/* Middle column is intentionally empty – caller renders content there */}
+      {/* Middle content rendered by parent */}
       <div className="order-1 md:order-2" />
 
       {/* Right rail */}
