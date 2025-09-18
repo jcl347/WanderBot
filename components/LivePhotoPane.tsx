@@ -1,123 +1,131 @@
+// components/LivePhotoPane.tsx
 "use client";
 
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 
 type Img = { url: string; title?: string; source?: string; license?: string };
 
 type Props = {
-  city: string;
-  terms: string[];        // short terms from LLM (no city names)
-  total?: number;         // total images to show after merging
-  perTerm?: number;       // how many to fetch per term
-  label?: string;
+  /** Plain phrase like "Miami South Beach" OR a city (use with `terms`) */
+  query?: string;
+  city?: string;
+  terms?: string[]; // short 1–2 word phrases (e.g., ["South Beach","Wynwood"])
+  count?: number;
   className?: string;
+  orientation?: "left" | "right";
 };
 
-async function fetchImages(q: string, count: number): Promise<Img[]> {
-  const res = await fetch("/api/images", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ q, count }),
-    cache: "no-store",
-  });
-  if (!res.ok) return [];
-  const data = await res.json().catch(() => ({ images: [] as Img[] }));
-  return Array.isArray(data?.images) ? (data.images as Img[]) : [];
+function buildQueryList(city: string, terms: string[], single?: string) {
+  if (single && single.trim()) return [single.trim()];
+  const c = (city || "").trim();
+  const clean = (terms || [])
+    .map((t) => String(t || "").replace(/[|,]/g, " ").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  // Make simple "<city> <term>" phrases; keep it short so Commons returns hits
+  return clean.map((t) => (c ? `${c} ${t}` : t));
 }
 
 export default function LivePhotoPane({
-  city,
-  terms,
-  total = 14,
-  perTerm = 8,
-  label,
+  query,
+  city = "",
+  terms = [],
+  count = 12,
   className = "",
+  orientation = "left",
 }: Props) {
-  const [images, setImages] = React.useState<Img[]>([]);
-  const [loading, setLoading] = React.useState(true);
+  const [images, setImages] = useState<Img[]>([]);
+  const [status, setStatus] = useState<"idle" | "loading" | "done" | "err">(
+    "idle"
+  );
 
-  React.useEffect(() => {
-    let cancelled = false;
+  const queries = useMemo(() => buildQueryList(city, terms, query), [city, terms, query]);
 
-    async function go() {
-      setLoading(true);
-      try {
-        const simpleTerms = (terms || [])
-          .map((t) => String(t || "").trim())
-          .filter(Boolean);
-
-        const queries = simpleTerms.map((t) => `${city} ${t}`);
-        const batches = await Promise.all(
-          queries.map((q) => fetchImages(q, perTerm))
-        );
-
-        const seen = new Set<string>();
-        const merged: Img[] = [];
-        for (const arr of batches) {
-          for (const img of arr) {
-            if (!img?.url || seen.has(img.url)) continue;
-            seen.add(img.url);
-            merged.push(img);
-            if (merged.length >= total) break;
-          }
-          if (merged.length >= total) break;
-        }
-
-        if (!cancelled) setImages(merged);
-      } catch {
-        if (!cancelled) setImages([]);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+  useEffect(() => {
+    if (!queries.length) {
+      setImages([]);
+      return;
     }
+    const ac = new AbortController();
+    (async () => {
+      try {
+        setStatus("loading");
+        // Ask our images API once per rail by joining simple terms with spaces.
+        // The API itself will do Commons lookups and verification.
+        const q = queries.join(" ");
+        const res = await fetch("/api/images", {
+          method: "POST",
+          signal: ac.signal,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ q, count }),
+          cache: "no-store",
+        });
+        if (!res.ok) throw new Error(`images ${res.status}`);
+        const json = await res.json();
+        setImages(Array.isArray(json?.images) ? json.images : []);
+        setStatus("done");
+      } catch (e) {
+        if (!ac.signal.aborted) {
+          console.error("[LivePhotoPane] fetch error", e);
+          setStatus("err");
+        }
+      }
+    })();
+    return () => ac.abort();
+  }, [queries, count]);
 
-    go();
-    return () => {
-      cancelled = true;
-    };
-  }, [city, JSON.stringify(terms), total, perTerm]);
+  // Preload first few for snappier display when opening the page
+  const preload = images.slice(0, Math.min(images.length, 6));
 
   return (
     <div
-      className={`relative rounded-2xl border bg-white/70 p-3 md:p-4 backdrop-blur-sm ${className}`}
-      aria-label={label || `${city} photos`}
+      className={[
+        "relative grid grid-cols-3 gap-2",
+        orientation === "left" ? "justify-start" : "justify-end",
+        className,
+      ].join(" ")}
     >
-      {loading && images.length === 0 ? (
-        <div className="text-xs text-zinc-500">Loading images for {city}…</div>
-      ) : null}
-
-      {images.length === 0 && !loading ? (
-        <div className="text-xs text-zinc-500">No images found.</div>
-      ) : null}
-
-      <div
-        className="
-          grid gap-2 md:gap-3
-          grid-cols-3
-          sm:grid-cols-4 md:grid-cols-5
-        "
-      >
-        {images.map((img, i) => {
-          const big = i % 7 === 0 || i % 11 === 0;
-          const span = big ? "col-span-2 row-span-2" : "";
-          const priority = i < 6;
-
-          return (
-            <div key={img.url} className={`relative aspect-[4/5] overflow-hidden rounded-xl ${span}`}>
-              <Image
-                src={img.url}
-                alt={img.title || `${city} photo`}
-                fill
-                sizes="(max-width: 768px) 33vw, 20vw"
-                className="object-cover"
-                priority={priority}
-                loading={priority ? "eager" : "lazy"}
-              />
-            </div>
-          );
-        })}
+      {/* Invisible high-priority preloads */}
+      <div className="sr-only">
+        {preload.map((im, i) => (
+          <Image
+            key={`pre-${i}`}
+            src={im.url}
+            alt={im.title || "photo"}
+            width={10}
+            height={10}
+            priority
+          />
+        ))}
       </div>
+
+      {status === "loading" && (
+        <div className="col-span-3 text-xs text-neutral-500 rounded-lg border p-2">
+          Loading images…
+        </div>
+      )}
+
+      {status !== "loading" && images.length === 0 && (
+        <div className="col-span-3 text-xs text-neutral-500 rounded-lg border p-2">
+          No images found.
+        </div>
+      )}
+
+      {images.map((im, i) => (
+        <div
+          key={i}
+          className="aspect-[4/5] overflow-hidden rounded-xl bg-neutral-200/50"
+        >
+          <Image
+            src={im.url}
+            alt={im.title || "photo"}
+            width={600}
+            height={750}
+            className="h-full w-full object-cover"
+            loading={i < 6 ? "eager" : "lazy"}
+          />
+        </div>
+      ))}
     </div>
   );
 }
