@@ -514,12 +514,17 @@ ${tableHeader}${rows}
 TIMEFRAME: ${timeframe.startMonth} → ${timeframe.endMonth}
 USER IDEAS: ${suggestions?.trim() || "none"}
 
-Airfare guidance (no browsing; estimate using seasonality, hub connectivity, distance bands):
-- Return **round-trip economy** prices in USD.
-- Provide **"monthBreakdown" covering every month in ${monthWindow}** for each traveler (keys: month "YYYY-MM", avgUSD number).
-- Keep prices realistic: clamp approx to **$60–$5000**; short-haul (≤1000 mi) $120–$350; medium (1000–3000) $180–$650; long-haul (3000–6000) $400–$1200; very long-haul ($900–$2000+).
-- Apply seasonality: summer/holidays ↑, shoulder ↓, and event spikes as applicable.
-- Derive "avgUSD" per traveler as the **mean of the monthly values**.
+Airfare estimation rule-of-thumb (no web browsing; derive from common industry patterns):
+- Return **round-trip economy** in USD.
+- Compute a **monthly average** for each month between ${timeframe.startMonth} and ${timeframe.endMonth}.
+- Derive each month’s value from:
+  • Great-circle distance band (≤1000mi, 1000–3000, 3000–6000, >6000)
+  • Hub vs. non-hub airports and nonstop competition (more carriers → lower fares)
+  • Seasonality: peak (Jun–Aug, mid-Dec–early Jan, Spring Break), shoulder, off-peak
+  • Regional anomalies (major festivals, hurricanes/monsoons, ski season, storm risk)
+  • Weekday vs weekend split (Fri/Sun premium vs Tue/Wed discount) aggregated to a monthly mean
+- Keep **short-haul** typical $120–$350; **medium** $180–$650; **long-haul** $400–$1200; **very long-haul** $900–$2000+. Clamp final numbers to **$60–$5000**.
+- Set each traveler’s overall "avgUSD" to the **mean of their monthly values** (not a separate guess).
 
 Hard requirements:
 - For each destination:
