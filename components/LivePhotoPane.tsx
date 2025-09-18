@@ -4,208 +4,225 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 
-type ApiImage = {
+type Img = {
   url: string;
   title?: string;
   source?: string;
   license?: string;
 };
 
-type Props = {
-  query: string;
-  count?: number;
-  /** purely for subtle style shifts if you want them */
-  orientation?: "left" | "right";
-  /** when to trigger fetching; keep stable/memoized to avoid lint warnings */
-  rootMargin?: string;
-  className?: string;
-};
+type Props =
+  | {
+      /** (Legacy) A single freeform query; we’ll simplify it to “City <word>” internally. */
+      query: string;
+      count?: number;
+      className?: string;
+    }
+  | {
+      /** New: explicit city + list of short terms (e.g., ["South Beach","Nightlife","Wynwood Walls","art scene"]) */
+      city: string;
+      terms: string[];
+      count?: number;
+      className?: string;
+    };
 
-function cx(...xs: Array<string | false | null | undefined>) {
-  return xs.filter(Boolean).join(" ");
+/** Keep only distinct by URL */
+function uniqueByUrl(arr: Img[]): Img[] {
+  const seen = new Set<string>();
+  const out: Img[] = [];
+  for (const it of arr) {
+    if (!it?.url) continue;
+    if (seen.has(it.url)) continue;
+    seen.add(it.url);
+    out.push(it);
+  }
+  return out;
 }
 
-/** simple <img> fallback, rarely used once next.config images are set */
-function RawImg({
-  src,
-  alt,
-  priority,
-}: {
-  src: string;
-  alt: string;
-  priority?: boolean;
-}) {
-  return (
-    // width/height attributes help prevent CLS even in fallback
-    <img
-      src={src}
-      alt={alt}
-      loading={priority ? "eager" : "lazy"}
-      decoding="async"
-      className="absolute inset-0 h-full w-full object-cover rounded-xl"
-    />
-  );
+/** Given a messy freeform query, collapse to “City Term” (first two tokens). */
+function simplifyFreeform(q: string): string {
+  if (!q) return "";
+  const words = q.split(/\s+/).filter(Boolean);
+  return words.slice(0, 2).join(" "); // "Miami South" / "Las Vegas Strip"
 }
 
-export default function LivePhotoPane({
-  query,
-  count = 10,
-  orientation,
-  rootMargin = "200px",
-  className = "",
-}: Props) {
-  const [imgs, setImgs] = useState<ApiImage[] | null>(null);
+/** Build the set of dead-simple queries. */
+function buildQueries(p: Props, total: number): string[] {
+  if ("city" in p) {
+    const city = (p.city || "").trim();
+    const cleanTerms = (p.terms || [])
+      .map((t) => String(t || "").trim())
+      .filter(Boolean);
+    // If no terms, just use the city itself
+    const base = cleanTerms.length ? cleanTerms : [""];
+    // “City + term” only (term can be empty => “City”)
+    const qs = base.map((t) => `${city}${t ? " " + t : ""}`.trim());
+    // Cap the number of parallel queries so we don’t over-fetch
+    return qs.slice(0, Math.max(1, Math.min(6, qs.length)));
+  } else {
+    const s = simplifyFreeform(p.query);
+    return s ? [s] : [];
+  }
+}
+
+/** Fetch images for ONE simple query via your /api/images endpoint */
+async function fetchImagesForTerm(term: string, want: number): Promise<Img[]> {
+  const res = await fetch("/api/images", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ q: term, count: want }),
+    cache: "no-store",
+  });
+  if (!res.ok) return [];
+  const json = await res.json().catch(() => ({ images: [] }));
+  return Array.isArray(json?.images) ? (json.images as Img[]) : [];
+}
+
+export default function LivePhotoPane(props: Props) {
+  const { count = 12, className = "" } = props as any;
+  const [imgs, setImgs] = useState<Img[]>([]);
+  const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [fetched, setFetched] = useState(false);
-  const ref = useRef<HTMLDivElement | null>(null);
 
-  // keep this stable to quiet the lint rule
-  const memoRootMargin = useMemo(() => rootMargin, [rootMargin]);
+  // Precompute very simple queries: ["Miami South Beach", "Miami Nightlife", ...]
+  const simpleQueries = useMemo(() => buildQueries(props, count), [props, count]);
+
+  // IntersectionObserver to only load once visible (nice perf boost)
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const [shouldLoad, setShouldLoad] = useState(false);
 
   useEffect(() => {
-    if (!ref.current) return;
-    let cancelled = false;
-
-    const el = ref.current;
+    const el = rootRef.current;
+    if (!el) return;
     const obs = new IntersectionObserver(
-      async (entries) => {
-        const vis = entries.some((e) => e.isIntersecting);
-        if (!vis || cancelled || fetched) return;
-
-        try {
-          setFetched(true);
-          const res = await fetch("/api/images", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ q: query, count }),
-            cache: "no-store",
-          });
-          if (!res.ok) {
-            setErr(`HTTP ${res.status}`);
-            return;
-          }
-          const data = (await res.json()) as { images?: ApiImage[] };
-          setImgs(Array.isArray(data.images) ? data.images : []);
-        } catch (e: any) {
-          setErr(e?.message || "fetch_failed");
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setShouldLoad(true);
+          obs.disconnect();
         }
       },
-      { rootMargin: memoRootMargin }
+      { root: null, rootMargin: "200px", threshold: 0.01 }
     );
-
     obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!shouldLoad) return;
+
+    let cancelled = false;
+    async function run() {
+      try {
+        setLoading(true);
+        setErr(null);
+
+        if (simpleQueries.length === 0) {
+          setImgs([]);
+          return;
+        }
+
+        // Allocate a target per term; we’ll slightly over-ask to survive duds.
+        const perTerm = Math.max(3, Math.ceil(count / Math.max(1, simpleQueries.length))) + 2;
+
+        // Fetch all terms in parallel, merge, dedupe
+        const batches = await Promise.all(
+          simpleQueries.map((term) => fetchImagesForTerm(term, perTerm))
+        );
+        let merged = uniqueByUrl(batches.flat());
+
+        // Fallback: if we got almost nothing, try just the bare city (first token of first query).
+        if (merged.length < Math.min(6, count) && simpleQueries[0]) {
+          const cityOnly = simpleQueries[0].split(/\s+/)[0];
+          if (cityOnly) {
+            const extra = await fetchImagesForTerm(cityOnly, Math.max(count, 12));
+            merged = uniqueByUrl([...merged, ...extra]);
+          }
+        }
+
+        // Trim to count
+        merged = merged.slice(0, count);
+
+        if (!cancelled) setImgs(merged);
+      } catch (e: any) {
+        if (!cancelled) setErr(e?.message || "Failed to load images");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    run();
     return () => {
       cancelled = true;
-      obs.disconnect();
     };
-  }, [query, count, memoRootMargin, fetched]);
+    // Intentionally only depend on the list, not err/loading
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shouldLoad, simpleQueries.join("|"), count]);
 
-  // Skeleton while waiting to intersect/fetch
-  if (!imgs) {
-    return (
-      <div
-        ref={ref}
-        className={cx(
-          "grid grid-cols-2 gap-2 md:gap-3 auto-rows-[120px] md:auto-rows-[140px]",
-          className
-        )}
-      >
-        {Array.from({ length: 6 }).map((_, i) => (
-          <div
-            key={i}
-            className={cx(
-              "rounded-xl bg-neutral-200/70 animate-pulse",
-              i % 5 === 0 && "col-span-2",
-              i % 7 === 0 && "row-span-2"
-            )}
-          />
-        ))}
-      </div>
-    );
-  }
+  // --- render ---
 
-  // Empty state
-  if (imgs.length === 0) {
-    return (
-      <div
-        className={cx(
-          "rounded-xl border bg-white/60 text-sm text-neutral-500 p-4",
-          className
-        )}
-        ref={ref}
-      >
-        No images found for <span className="font-medium">“{query}”</span>.
-      </div>
-    );
-  }
-
-  // Collage grid:
-  // - explicit auto-rows height guarantees non-zero height for fill images
-  // - varied spans make a mosaic
   return (
-    <div
-      ref={ref}
-      className={cx(
-        "grid grid-cols-2 gap-2 md:gap-3 auto-rows-[120px] md:auto-rows-[140px]",
-        className
-      )}
-      aria-label={`image collage ${orientation ?? ""}`.trim()}
-    >
-      {imgs.slice(0, count).map((im, i) => {
-        // pattern the spans for a lively layout
-        const span =
-          i % 7 === 0
-            ? "col-span-2"
-            : i % 5 === 0
-            ? "row-span-2"
-            : undefined;
-
-        const priority = i < 3; // preload a few for snappy LCP
-        const alt = im.title || `Photo ${i + 1}`;
+    <div ref={rootRef} className={`w-full h-full ${className}`}>
+      {/* Collage grid — varied sizes for visual interest */}
+      <div className="grid grid-cols-3 gap-2 md:gap-3 auto-rows-[90px] md:auto-rows-[110px]">
+        {imgs.map((im, i) => {
+          // Make some cells larger to create a collage feeling
+          const span =
+            i % 7 === 0
+              ? "col-span-2 row-span-2"
+              : i % 5 === 0
+              ? "col-span-2"
+              : "";
 
         return (
-          <figure
+          <div
             key={im.url + i}
-            className={cx(
-              "relative rounded-xl overflow-hidden shadow-sm bg-neutral-100",
-              // give each item height via auto-rows + (optional) row/col spans
-              span
-            )}
+            className={`relative rounded-xl overflow-hidden bg-neutral-200 ${span}`}
           >
-            {/* Keep an intrinsic area with aspect if this card spans both columns */}
-            <div className="absolute inset-0" />
-            {/* Prefer next/image; if domain config is missing, it’ll error in dev — fallback <img> keeps UI alive */}
             <Image
               src={im.url}
-              alt={alt}
+              alt={im.title || "Photo"}
               fill
-              sizes="(min-width: 768px) 260px, 50vw"
-              priority={priority}
-              loading={priority ? "eager" : "lazy"}
-              decoding="async"
+              sizes="(max-width: 768px) 33vw, 260px"
               className="object-cover"
-              onError={(e) => {
-                const el = (e.target as HTMLImageElement).parentElement;
-                if (!el) return;
-                // Replace with a raw <img> fallback
-                el.innerHTML = "";
-                const fallback = document.createElement("img");
-                fallback.src = im.url;
-                fallback.alt = alt;
-                fallback.loading = priority ? "eager" : "lazy";
-                fallback.decoding = "async";
-                fallback.className = "absolute inset-0 h-full w-full object-cover rounded-xl";
-                el.appendChild(fallback);
-              }}
+              // First few get priority for snappier LCP
+              priority={i < 4}
+              // Modern browsers decode off-thread; avoid layout jank
+              loading={i < 4 ? "eager" : "lazy"}
             />
-            {/* Optional tiny overlay – license/source if you want it visible
-            <figcaption className="absolute bottom-0 left-0 right-0 bg-black/30 text-[10px] text-white px-1 py-0.5 truncate">
-              {im.license || ""}{im.source ? " • " : ""}{im.source ? "Wikimedia" : ""}
-            </figcaption>
-            */}
-          </figure>
+            {/* Optional subtle gradient & caption on hover */}
+            <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-transparent opacity-0 hover:opacity-100 transition-opacity" />
+            {im.title ? (
+              <div className="pointer-events-none absolute bottom-1 left-1 right-1 text-[10px] md:text-xs text-white/90 line-clamp-1 drop-shadow">
+                {im.title}
+              </div>
+            ) : null}
+          </div>
         );
-      })}
+        })}
+
+        {/* Skeletons while loading / or if empty */}
+        {loading && imgs.length === 0
+          ? Array.from({ length: Math.max(6, Math.min(12, count)) }).map((_, i) => (
+              <div
+                key={`sk-${i}`}
+                className="rounded-xl bg-neutral-200/70 animate-pulse"
+                style={{ height: i % 7 === 0 ? 220 : 110 }}
+              />
+            ))
+          : null}
+      </div>
+
+      {!loading && imgs.length === 0 && (
+        <div className="text-xs text-neutral-500 mt-2">
+          No images found for: {simpleQueries.join(", ")}
+        </div>
+      )}
+
+      {err && (
+        <div className="text-xs text-rose-600 mt-2">
+          Image error: {err}
+        </div>
+      )}
     </div>
   );
 }
