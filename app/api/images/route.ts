@@ -3,8 +3,16 @@ import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
-// HEAD verify it's an image (guards broken thumbs)
-async function verifyImage(url: string): Promise<boolean> {
+type Img = {
+  url: string;
+  title?: string;
+  source?: string;
+  license?: string;
+  width?: number;
+  height?: number;
+};
+
+async function verifyImage(url: string) {
   try {
     const res = await fetch(url, { method: "HEAD", cache: "no-store" });
     if (!res.ok) return false;
@@ -15,99 +23,101 @@ async function verifyImage(url: string): Promise<boolean> {
   }
 }
 
-type Img = {
-  url: string;
-  title?: string;
-  source?: string;
-  width?: number;
-  height?: number;
-  license?: string;
-};
-
-async function commonsSearch(query: string, want: number): Promise<Img[]> {
+/**
+ * Robust Wikimedia Commons search that targets file namespace (6),
+ * returns imageinfo with a decent thumb, and works with simple phrases
+ * like "Miami South Beach" or "Miami Wynwood Walls".
+ */
+async function commonsSearchSimple(q: string, count: number): Promise<Img[]> {
   const reqId = Math.random().toString(36).slice(2, 8);
+  const take = Math.min(50, Math.max(count * 4, 20));
 
-  const u = new URL("https://commons.wikimedia.org/w/api.php");
-  u.searchParams.set("action", "query");
-  u.searchParams.set("format", "json");
-  u.searchParams.set("prop", "imageinfo");
-  u.searchParams.set("generator", "search");
-  // Keep it SIMPLE: use the raw query (e.g. "Miami South Beach")
-  u.searchParams.set("gsrsearch", query);
-  // Grab a big page and trim locally
-  u.searchParams.set("gsrlimit", String(Math.min(50, Math.max(want * 4, 20))));
-  u.searchParams.set("iiprop", "url|size|mime|extmetadata");
-  // 1600px thumbs (good quality + not huge)
-  u.searchParams.set("iiurlwidth", "1600");
-  u.searchParams.set("origin", "*");
+  // We try two variants:
+  //   1) raw phrase
+  //   2) quoted phrase (helps with multi-word e.g., "South Beach")
+  const variants = [q, `"${q}"`];
 
-  console.log(`[images ${reqId}] commons query="${query}"`);
-  const res = await fetch(u.toString(), { cache: "no-store" });
-  if (!res.ok) {
-    console.log(`[images ${reqId}] status=${res.status}`);
-    return [];
-  }
-  const data = await res.json();
-  const pages: any[] = Object.values(data?.query?.pages ?? {});
-  const out: Img[] = [];
+  console.log(`[images ${reqId}] commons start q="${q}" variants=${variants.length}`);
 
-  for (const p of pages) {
-    const ii = p?.imageinfo?.[0];
-    const url = ii?.thumburl || ii?.url;
-    const mime = (ii?.mime ?? "").toLowerCase();
-    if (!url || !mime.startsWith("image/")) continue;
+  const results: Img[] = [];
+  const seen = new Set<string>();
 
-    // Optional HEAD check to avoid 404 thumbs
-    if (!(await verifyImage(url))) continue;
+  for (const v of variants) {
+    if (results.length >= count) break;
 
-    out.push({
-      url,
-      title: p?.title,
-      source:
-        "https://commons.wikimedia.org/wiki/" +
-        encodeURIComponent(p?.title || ""),
-      width: ii?.thumbwidth ?? ii?.width,
-      height: ii?.thumbheight ?? ii?.height,
-      license: ii?.extmetadata?.LicenseShortName?.value,
-    });
-    if (out.length >= want) break;
+    const u = new URL("https://commons.wikimedia.org/w/api.php");
+    u.searchParams.set("action", "query");
+    u.searchParams.set("format", "json");
+    u.searchParams.set("origin", "*");
+    // generator=search in File (6) namespace finds actual images
+    u.searchParams.set("generator", "search");
+    u.searchParams.set("gsrsearch", v);
+    u.searchParams.set("gsrnamespace", "6"); // File namespace
+    u.searchParams.set("gsrlimit", String(take));
+    // fetch image info + a good sized thumb
+    u.searchParams.set("prop", "imageinfo");
+    u.searchParams.set("iiprop", "url|mime|extmetadata|size");
+    u.searchParams.set("iiurlwidth", "1600");
+    // be explicit
+    u.searchParams.set("uselang", "en");
+
+    const res = await fetch(u.toString(), { cache: "no-store" });
+    if (!res.ok) {
+      console.log(`[images ${reqId}] commons status=${res.status} for variant="${v}"`);
+      continue;
+    }
+
+    const data = await res.json();
+    const pages: any[] = Object.values(data?.query?.pages ?? {});
+    console.log(
+      `[images ${reqId}] variant="${v}" pages=${pages.length} (pre-filter)`
+    );
+
+    for (const p of pages) {
+      if (results.length >= count) break;
+      const ii = p?.imageinfo?.[0];
+      const url: string | undefined = ii?.thumburl || ii?.url;
+      const mime = (ii?.mime ?? "").toLowerCase();
+      if (!url || !mime.startsWith("image/")) continue;
+      if (seen.has(url)) continue;
+
+      // quick HEAD to avoid broken images
+      if (!(await verifyImage(url))) continue;
+
+      seen.add(url);
+      results.push({
+        url,
+        title: p?.title,
+        width: ii?.thumbwidth ?? ii?.width,
+        height: ii?.thumbheight ?? ii?.height,
+        source:
+          "https://commons.wikimedia.org/wiki/" +
+          encodeURIComponent(p?.title || ""),
+        license: ii?.extmetadata?.LicenseShortName?.value,
+      });
+    }
   }
 
   console.log(
-    `[images ${reqId}] commons returned=${out.length}/${want} for "${query}"`
+    `[images ${reqId}] commons verified=${results.length}/${count} (returning)`
   );
-  return out;
+  return results.slice(0, count);
 }
 
 export async function POST(req: Request) {
   const reqId = Math.random().toString(36).slice(2, 8);
   try {
     const body = await req.json().catch(() => ({} as any));
+    const q = String(body?.q ?? "").trim();
     const count = Math.max(1, Math.min(Number(body?.count ?? 12), 24));
 
-    // Accept either { q: "Miami South Beach" } OR { queries: ["Miami South Beach", "Miami Nightlife", ...] }
-    let queries: string[] = [];
-    if (Array.isArray(body?.queries)) {
-      queries = body.queries.filter((s: any) => typeof s === "string" && s.trim());
-    } else if (typeof body?.q === "string" && body.q.trim()) {
-      queries = [body.q.trim()];
-    }
-
-    if (!queries.length) {
-      console.log(`[images ${reqId}] missing query terms`);
+    if (!q) {
+      console.log(`[images ${reqId}] missing q`);
       return NextResponse.json({ images: [] });
     }
 
-    console.log(`[images ${reqId}] try terms=`, queries);
-    const images: Img[] = [];
-    for (const term of queries) {
-      const need = count - images.length;
-      if (need <= 0) break;
-      const got = await commonsSearch(term, need);
-      images.push(...got);
-    }
-
-    console.log(`[images ${reqId}] total_returned=${images.length}`);
+    // Keep the phrase intact (e.g., "Miami South Beach"), do not truncate.
+    const images = await commonsSearchSimple(q, count);
     return NextResponse.json({ images });
   } catch (e: any) {
     console.error(`[images fatal]`, e?.message || e);
