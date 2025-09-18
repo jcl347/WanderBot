@@ -2,16 +2,11 @@
 const nextConfig = {
   poweredByHeader: false,
 
-  // Keep builds green while we iterate quickly; adjust later if you want strictness.
+  // Keep CI green while you iterate; tighten later if you like.
   eslint: { ignoreDuringBuilds: true },
   typescript: { ignoreBuildErrors: true },
 
-  experimental: {
-    optimizeCss: true,
-  },
-
   images: {
-    // Allow Wikimedia and (optionally) Unsplash if you ever fall back to it.
     remotePatterns: [
       { protocol: "https", hostname: "upload.wikimedia.org" },
       { protocol: "https", hostname: "commons.wikimedia.org" },
@@ -22,11 +17,8 @@ const nextConfig = {
   async headers() {
     return [
       {
-        // Light caching for the image API to improve repeat nav performance
         source: "/api/images",
-        headers: [
-          { key: "Cache-Control", value: "public, max-age=60, stale-while-revalidate=300" },
-        ],
+        headers: [{ key: "Cache-Control", value: "public, max-age=60, stale-while-revalidate=300" }],
       },
     ];
   },
