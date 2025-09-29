@@ -4,7 +4,7 @@ import * as React from "react";
 import SectionCard from "./SectionCard";
 import MonthLine from "./MonthLine";
 import MapLeaflet from "./MapLeaflet";
-import LivePhotoPane from "./LivePhotoPane";
+import LiveCollage from "./LiveCollage";
 
 type Fare = {
   travelerName: string;
@@ -53,36 +53,26 @@ function smoothFareSeries(series: { month: string; avgUSD: number }[]) {
 
 function fillAndSmoothMonths(raw: Fare[]): Fare[] {
   const set = new Set<string>();
-  for (const f of raw)
-    for (const m of f.monthBreakdown || [])
-      if (m?.month) set.add(m.month.slice(0, 7));
+  for (const f of raw) for (const m of f.monthBreakdown || []) if (m?.month) set.add(m.month.slice(0, 7));
   let months = Array.from(set).sort();
   if (months.length === 0) {
     const d = new Date();
     const a = new Date(d.getFullYear(), d.getMonth(), 1);
     const b = new Date(d.getFullYear(), d.getMonth() + 1, 1);
     const c = new Date(d.getFullYear(), d.getMonth() + 2, 1);
-    months = [a, b, c].map(
-      (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}`
-    );
+    months = [a, b, c].map((x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}`);
   }
 
   return raw.map((f) => {
     const mb = Array.isArray(f.monthBreakdown) ? [...f.monthBreakdown] : [];
-    const byKey = new Map(
-      mb.map((x) => [x.month.slice(0, 7), Number(x.avgUSD) || f.avgUSD || 0])
-    );
+    const byKey = new Map(mb.map((x) => [x.month.slice(0, 7), Number(x.avgUSD) || f.avgUSD || 0]));
     for (const m of months) {
       if (!byKey.has(m)) mb.push({ month: m, avgUSD: f.avgUSD });
     }
     const smoothed = smoothFareSeries(
-      mb.map((x) => ({
-        month: x.month.slice(0, 7),
-        avgUSD: Number(x.avgUSD) || f.avgUSD || 0,
-      }))
+      mb.map((x) => ({ month: x.month.slice(0, 7), avgUSD: Number(x.avgUSD) || f.avgUSD || 0 }))
     );
-    const mean =
-      smoothed.reduce((a, x) => a + x.avgUSD, 0) / Math.max(1, smoothed.length);
+    const mean = smoothed.reduce((a, x) => a + x.avgUSD, 0) / Math.max(1, smoothed.length);
     return {
       ...f,
       avgUSD: Math.round(mean),
@@ -91,20 +81,17 @@ function fillAndSmoothMonths(raw: Fare[]): Fare[] {
   });
 }
 
-function buildCityTerms(dest: any, limit = 14) {
+function buildCityTerms(dest: any, limit = 18) {
   const name: string = String(dest?.name || "").trim();
   const analysis = dest?.analysis ?? {};
   const model: string[] = Array.isArray(analysis.image_queries)
-    ? analysis.image_queries.filter(
-        (s: unknown): s is string => typeof s === "string" && !!s.trim()
-      )
+    ? analysis.image_queries.filter((s: unknown): s is string => typeof s === "string" && !!s.trim())
     : [];
 
   if (model.length) {
     const cleaned = model.map((t: string) => {
       const one = t.replace(/\s+/g, " ").trim();
-      if (name && one.toLowerCase().startsWith(name.toLowerCase() + " "))
-        return one;
+      if (name && one.toLowerCase().startsWith(name.toLowerCase() + " ")) return one;
       return name ? `${name} ${one}` : one;
     });
     return Array.from(new Set(cleaned)).slice(0, limit);
@@ -128,9 +115,7 @@ function buildCityTerms(dest: any, limit = 14) {
 
 export default function DestDetailClient({ dest }: { dest: any }) {
   const fares = React.useMemo(() => {
-    const raw: Fare[] = Array.isArray(dest?.per_traveler_fares)
-      ? dest.per_traveler_fares
-      : [];
+    const raw: Fare[] = Array.isArray(dest?.per_traveler_fares) ? dest.per_traveler_fares : [];
     return fillAndSmoothMonths(raw);
   }, [dest?.per_traveler_fares]);
 
@@ -144,9 +129,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     const a = new Date(d.getFullYear(), d.getMonth(), 1);
     const b = new Date(d.getFullYear(), d.getMonth() + 1, 1);
     const c = new Date(d.getFullYear(), d.getMonth() + 2, 1);
-    return [a, b, c].map(
-      (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}`
-    );
+    return [a, b, c].map((x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}`);
   }, [fares]);
 
   const series = React.useMemo(() => {
@@ -154,18 +137,14 @@ export default function DestDetailClient({ dest }: { dest: any }) {
       const row: Record<string, number | string | null> = { month: m };
       for (const f of fares) {
         const found = f.monthBreakdown?.find((x) => x.month === m)?.avgUSD;
-        row[f.travelerName] = Number.isFinite(found as number)
-          ? (found as number)
-          : f.avgUSD ?? null;
+        row[f.travelerName] = Number.isFinite(found as number) ? (found as number) : f.avgUSD ?? null;
       }
       return row;
     });
   }, [months, fares]);
 
   const analysis = dest?.analysis ?? {};
-  const rawMarkers: Marker[] = Array.isArray(analysis.map_markers)
-    ? analysis.map_markers
-    : [];
+  const rawMarkers: Marker[] = Array.isArray(analysis.map_markers) ? analysis.map_markers : [];
 
   let pins =
     rawMarkers
@@ -185,18 +164,23 @@ export default function DestDetailClient({ dest }: { dest: any }) {
   if (pins.length === 0 && hasCenter) {
     pins = [{ position: [mc.lat, mc.lon], label: String(dest?.name || "Center") }];
   }
-  const center: [number, number] | undefined = hasCenter
-    ? [mc.lat, mc.lon]
-    : pins[0]?.position;
+  const center: [number, number] | undefined = hasCenter ? [mc.lat, mc.lon] : pins[0]?.position;
 
-  const terms = React.useMemo(() => buildCityTerms(dest, 18), [dest]);
-  const mid = Math.max(1, Math.ceil(terms.length / 2));
-  const leftTerms = terms.slice(0, mid);
-  const rightTerms = terms.slice(mid);
+  const simpleTerms = React.useMemo(() => buildCityTerms(dest, 22), [dest]);
+  const mid = Math.max(1, Math.ceil(simpleTerms.length / 2));
+  const leftTerms = simpleTerms.slice(0, mid);
+  const rightTerms = simpleTerms.slice(mid);
 
   return (
-    <>
-      <div className="md:col-start-2 md:row-start-1 md:px-0 space-y-6">
+    <LiveCollage
+      leftTerms={leftTerms}
+      rightTerms={rightTerms}
+      railWidth={480}               // <<< WIDE rails
+      railClassName="max-h-[calc(100vh-8rem)]"
+      className="mt-6"
+    >
+      {/* Center column content */}
+      <div className="space-y-6">
         <SectionCard>
           <h1 className="text-3xl font-semibold">{dest.name}</h1>
           <p className="text-neutral-700 whitespace-pre-line mt-3 text-lg leading-relaxed">
@@ -210,8 +194,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
             <ul className="list-disc pl-6 text-sm">
               {dest.months.map((m: any) => (
                 <li key={m.month}>
-                  <span className="font-medium">{formatMonthYYYY(m.month)}:</span>{" "}
-                  {m.note}
+                  <span className="font-medium">{formatMonthYYYY(m.month)}:</span> {m.note}
                 </li>
               ))}
             </ul>
@@ -224,8 +207,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
           <h2 className="text-lg font-semibold mb-3">Monthly fare trend</h2>
           <MonthLine data={series} />
           <p className="text-xs text-neutral-500 mt-2">
-            Estimated averages per traveler (round-trip, USD). Missing months are
-            inferred and lightly smoothed.
+            Estimated averages per traveler (round-trip, USD). Missing months are inferred and lightly smoothed.
           </p>
         </SectionCard>
 
@@ -236,9 +218,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
               <MapLeaflet center={center} zoom={pins.length > 1 ? 11 : 8} markers={pins} />
             </div>
           ) : (
-            <div className="text-sm text-neutral-500">
-              No map data available for this destination.
-            </div>
+            <div className="text-sm text-neutral-500">No map data available for this destination.</div>
           )}
         </SectionCard>
 
@@ -258,9 +238,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
                   <tr key={i} className="border-t">
                     <td className="p-2">{f.travelerName}</td>
                     <td className="p-2">{f.from}</td>
-                    <td className="p-2">
-                      ${Math.round(f.avgUSD).toLocaleString()}
-                    </td>
+                    <td className="p-2">${Math.round(f.avgUSD).toLocaleString()}</td>
                   </tr>
                 ))}
               </tbody>
@@ -268,66 +246,6 @@ export default function DestDetailClient({ dest }: { dest: any }) {
           </div>
         </SectionCard>
       </div>
-
-      {/* WIDE photo rails with lots of space */}
-      <div className="mt-10 hidden lg:grid gap-8 2xl:gap-10"
-           style={{
-             gridTemplateColumns:
-               "520px minmax(0,1fr) 520px" /* big rails on desktop */,
-           }}>
-        <div className="sticky top-20 self-start">
-          <LivePhotoPane
-            terms={leftTerms}
-            count={18}
-            orientation="left"
-            tileHeight={300}
-            className="w-full"
-          />
-        </div>
-
-        <div /> {/* spacer for middle content (already above) */}
-
-        <div className="sticky top-20 self-start">
-          <LivePhotoPane
-            terms={rightTerms}
-            count={18}
-            orientation="right"
-            tileHeight={300}
-            className="w-full"
-          />
-        </div>
-      </div>
-
-      {/* On medium screens, still show the rails but a touch smaller */}
-      <div className="mt-8 hidden md:grid lg:hidden gap-6"
-           style={{
-             gridTemplateColumns:
-               "420px minmax(0,1fr) 420px",
-           }}>
-        <div className="sticky top-20 self-start">
-          <LivePhotoPane
-            terms={leftTerms}
-            count={14}
-            orientation="left"
-            tileHeight={260}
-            className="w-full"
-          />
-        </div>
-
-        <div />
-
-        <div className="sticky top-20 self-start">
-          <LivePhotoPane
-            terms={rightTerms}
-            count={14}
-            orientation="right"
-            tileHeight={260}
-            className="w-full"
-          />
-        </div>
-      </div>
-
-      {/* Mobile fallback collage renders above within main content */}
-    </>
+    </LiveCollage>
   );
 }

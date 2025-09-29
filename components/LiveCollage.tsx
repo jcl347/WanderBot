@@ -3,81 +3,75 @@
 import * as React from "react";
 import LivePhotoPane from "./LivePhotoPane";
 
-type Props = {
-  leftTerms?: string[];
-  rightTerms?: string[];
-  bottomTerms?: string[];
-  /** rail width on desktop (px) */
-  railWidth?: number;
-  /** tile height (px) for image cards inside rails */
-  railTileHeight?: number;
-  className?: string;
-  railClassName?: string;
-  children: React.ReactNode;
-};
-
+/**
+ * Three-column layout with sticky image rails on desktop.
+ * - Desktop (md+): [ left rail | children | right rail ]
+ * - Mobile: children then a merged bottom collage
+ */
 export default function LiveCollage({
   leftTerms = [],
   rightTerms = [],
   bottomTerms,
-  railWidth = 520,         // WIDE by default
-  railTileHeight = 280,    // big tiles so the micro-itineraries are visible
+  railWidth = 480,
+  children,
   className = "",
   railClassName = "",
-  children,
-}: Props) {
+}: {
+  leftTerms?: string[];
+  rightTerms?: string[];
+  bottomTerms?: string[];
+  railWidth?: number;
+  children: React.ReactNode;
+  className?: string;
+  railClassName?: string;
+}) {
   const mergedBottom = React.useMemo(() => {
-    const b =
-      bottomTerms && bottomTerms.length
-        ? bottomTerms
-        : [...leftTerms, ...rightTerms];
+    const b = bottomTerms && bottomTerms.length ? bottomTerms : [...leftTerms, ...rightTerms];
     return Array.from(new Set(b)).slice(0, 18);
   }, [bottomTerms, leftTerms, rightTerms]);
 
   return (
     <div className={className}>
-      {/* Mobile: show content then a big collage */}
-      <div className="md:hidden space-y-5">
+      {/* Mobile: children then a bottom collage */}
+      <div className="md:hidden space-y-6">
         <div>{children}</div>
         {mergedBottom.length > 0 && (
-          <LivePhotoPane
-            terms={mergedBottom}
-            count={12}
-            orientation="left"
-            tileHeight={railTileHeight}
-            className={railClassName}
-          />
+          <div className="mt-2">
+            <LivePhotoPane terms={mergedBottom} count={14} side="bottom" className="max-h-[80vh]" />
+          </div>
         )}
       </div>
 
-      {/* Desktop: BIG left & right rails, sticky for easy viewing */}
+      {/* Desktop: true three-column grid */}
       <div
-        className="hidden md:grid gap-6 xl:gap-8"
+        className="hidden md:grid gap-6"
         style={{
           gridTemplateColumns: `${railWidth}px minmax(0,1fr) ${railWidth}px`,
         }}
       >
-        <div className="sticky top-20 self-start">
+        <div className="self-start">
           {leftTerms.length > 0 && (
             <LivePhotoPane
               terms={leftTerms}
-              count={16}
-              orientation="left"
-              tileHeight={railTileHeight}
+              count={24}
+              side="left"
+              railWidth={railWidth}
+              tileWidth={Math.min(300, Math.floor(railWidth * 0.9))}
               className={railClassName}
             />
           )}
         </div>
 
-        <div>{children}</div>
+        <div className="min-w-0">{children}</div>
 
-        <div className="sticky top-20 self-start">
+        <div className="self-start">
           {rightTerms.length > 0 && (
             <LivePhotoPane
               terms={rightTerms}
-              count={16}
-              orientation="right"
-              tileHeight={railTileHeight}
+              count={24}
+              side="right"
+              railWidth={railWidth}
+              tileWidth={Math.min(300, Math.floor(railWidth * 0.9))}
               className={railClassName}
             />
           )}
