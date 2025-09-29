@@ -13,6 +13,8 @@ type Props = {
   className?: string;
 };
 
+/* -------------------------- term helpers (unchanged) ------------------------- */
+
 function firstToken(s: string): string {
   const parts = String(s || "").split(/[,(|-]/);
   return (parts[0] || s || "").trim();
@@ -57,6 +59,73 @@ function buildSimpleTerms(query?: string, terms?: string[], want = 10): string[]
   return Array.from(new Set(out)).slice(0, want);
 }
 
+/* ----------------------------- preload + cache ------------------------------ */
+/** In-memory client cache so multiple panes or re-renders don't re-fetch. */
+type CacheEntry = {
+  urls: Img[];
+  inflight?: Promise<Img[]>;
+  ts: number;
+};
+const _imageCache = new Map<string, CacheEntry>();
+
+function keyFor(terms: string[], count: number) {
+  const t = [...new Set(terms.map((s) => s.trim().toLowerCase()))].sort();
+  return JSON.stringify({ t, c: count });
+}
+
+async function fetchImagesViaAPI(terms: string[], count: number): Promise<Img[]> {
+  // Contract: { terms: string[], count }
+  const body = { terms, count: Math.max(8, Math.min(24, count * 2)) };
+  const res = await fetch("/api/images", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`images api ${res.status}`);
+  const json = await res.json();
+
+  // Accept either { images: Img[] } or { urls: string[] } for extra robustness.
+  const imgs: Img[] = Array.isArray(json?.images)
+    ? (json.images as Img[]).filter((x) => typeof x?.url === "string")
+    : Array.isArray(json?.urls)
+    ? (json.urls as string[]).map((u: string) => ({ url: u }))
+    : [];
+
+  return imgs;
+}
+
+function preloadImages(urls: Img[], take: number) {
+  if (typeof window === "undefined") return;
+  urls.slice(0, take).forEach((im) => {
+    const i = new (window as any).Image() as HTMLImageElement;
+    i.decoding = "async";
+    i.loading = "eager";
+    i.src = im.url;
+  });
+}
+
+/** Fetch + preload with caching. Safe to call multiple times (de-duped). */
+async function getOrPreload(terms: string[], count: number): Promise<Img[]> {
+  const k = keyFor(terms, count);
+  const cached = _imageCache.get(k);
+  if (cached?.urls?.length) return cached.urls;
+  if (cached?.inflight) return cached.inflight;
+
+  const inflight = (async () => {
+    const imgs = await fetchImagesViaAPI(terms, count);
+    preloadImages(imgs, count);
+    const trimmed = imgs.slice(0, count);
+    _imageCache.set(k, { urls: trimmed, ts: Date.now() });
+    return trimmed;
+  })();
+
+  _imageCache.set(k, { urls: [], inflight, ts: Date.now() });
+  return inflight;
+}
+
+/* ---------------------------------- UI ------------------------------------- */
+
 export default function LivePhotoPane({
   query,
   terms,
@@ -78,6 +147,7 @@ export default function LivePhotoPane({
     async function run() {
       if (!simpleTerms.length) {
         setImages([]);
+        setErrorText(null);
         return;
       }
 
@@ -85,34 +155,10 @@ export default function LivePhotoPane({
         setLoading(true);
         setErrorText(null);
 
-        const body = { q: simpleTerms.join(", "), count: Math.max(8, Math.min(24, count * 2)) };
-        const res = await fetch("/api/images", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-          cache: "no-store",
-        });
-
-        if (!res.ok) throw new Error(`images api ${res.status}`);
-        const json = await res.json();
-
-        const imgs: Img[] = Array.isArray(json?.images)
-          ? (json.images as Img[]).filter((x) => typeof x?.url === "string")
-          : [];
+        const imgs = await getOrPreload(simpleTerms, count);
 
         if (cancelled) return;
-
-        // Preload
-        if (typeof window !== "undefined") {
-          imgs.slice(0, count).forEach((im) => {
-            const i = new (window as any).Image() as HTMLImageElement;
-            i.decoding = "async";
-            i.loading = "eager";
-            i.src = im.url;
-          });
-        }
-
-        setImages(imgs.slice(0, count));
+        setImages(imgs);
       } catch (e: any) {
         if (!cancelled) {
           setErrorText(e?.message || "Failed to load images");

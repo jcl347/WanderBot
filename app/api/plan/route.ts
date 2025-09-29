@@ -8,7 +8,7 @@ import { q } from "@/lib/db";
 export const runtime = "nodejs";
 
 // ---------------- helpers ----------------
-const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const MODEL = process.env.OPENAI_MODEL || "gpt-4.1";
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
 // stringify + null-safe
@@ -591,7 +591,7 @@ export async function POST(req: NextRequest) {
       model: MODEL,
       response_format: { type: "json_object" },
       temperature: 0.2,
-      max_tokens: 4000,
+      max_tokens: 6500,
       messages: [
         {
           role: "system",

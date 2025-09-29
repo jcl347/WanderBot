@@ -1,47 +1,69 @@
-// components/LiveCollage.tsx
 "use client";
 
-import React from "react";
+import * as React from "react";
 import LivePhotoPane from "./LivePhotoPane";
 
-type Props = {
-  leftList?: string[];   // e.g., ["Miami South Beach", "Miami Wynwood"]
-  rightList?: string[];
-  leftCount?: number;
-  rightCount?: number;
-  className?: string;
-};
-
+/**
+ * Three-column wrapper:
+ * - Desktop (md+):   [ left rail | children (analytics) | right rail ]
+ * - Mobile (<md):    children, then a single bottom collage (merged)
+ *
+ * Props let you pass distinct terms per rail; if bottomTerms is omitted,
+ * it merges left+right for the mobile bottom rail automatically.
+ */
 export default function LiveCollage({
-  leftList = [],
-  rightList = [],
-  leftCount = 14,
-  rightCount = 14,
+  leftTerms = [],
+  rightTerms = [],
+  bottomTerms,
+  railWidth = 320,
+  children,
   className = "",
-}: Props) {
+  railClassName = "",
+}: {
+  leftTerms?: string[];
+  rightTerms?: string[];
+  bottomTerms?: string[];
+  railWidth?: number;
+  children: React.ReactNode;
+  className?: string;
+  railClassName?: string;
+}) {
+  const mergedBottom = React.useMemo(() => {
+    const b = bottomTerms && bottomTerms.length ? bottomTerms : [...leftTerms, ...rightTerms];
+    // Keep it snappy on mobile
+    return Array.from(new Set(b)).slice(0, 16);
+  }, [bottomTerms, leftTerms, rightTerms]);
+
   return (
-    <div
-      className={`relative grid grid-cols-1 md:grid-cols-[minmax(280px,360px)_minmax(0,1fr)_minmax(280px,360px)] gap-6 ${className}`}
-    >
-      {/* Left rail */}
-      <div className="order-2 md:order-1">
-        {leftList.length ? (
-          <LivePhotoPane terms={leftList} count={leftCount} orientation="left" />
-        ) : (
-          <div className="hidden md:block h-[560px] rounded-xl border bg-white/50" />
+    <div className={className}>
+      {/* Mobile: children then bottom collage */}
+      <div className="md:hidden space-y-4">
+        <div>{children}</div>
+        {mergedBottom.length > 0 && (
+          <LivePhotoPane terms={mergedBottom} count={12} orientation="left" className={railClassName} />
         )}
       </div>
 
-      {/* Middle column: caller renders content here */}
-      <div className="order-1 md:order-2" />
+      {/* Desktop: three-column with sticky rails */}
+      <div
+        className="hidden md:grid gap-4"
+        style={{
+          gridTemplateColumns: `${railWidth}px minmax(0,1fr) ${railWidth}px`,
+        }}
+      >
+        <div className="sticky top-20 self-start">
+          {leftTerms.length > 0 && (
+            <LivePhotoPane terms={leftTerms} count={12} orientation="left" className={railClassName} />
+          )}
+        </div>
 
-      {/* Right rail */}
-      <div className="order-3">
-        {rightList.length ? (
-          <LivePhotoPane terms={rightList} count={rightCount} orientation="right" />
-        ) : (
-          <div className="hidden md:block h-[560px] rounded-xl border bg-white/50" />
-        )}
+        <div>{children}</div>
+
+        <div className="sticky top-20 self-start">
+          {rightTerms.length > 0 && (
+            <LivePhotoPane terms={rightTerms} count={12} orientation="right" className={railClassName} />
+          )}
+        </div>
       </div>
     </div>
   );

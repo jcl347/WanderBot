@@ -2,6 +2,7 @@
 "use client";
 import Link from "next/link";
 import React from "react";
+import { prewarmImages, buildSimpleTermsFromDest } from "@/lib/image-prewarm";
 
 export default function DestinationCard({
   dest,
@@ -15,10 +16,39 @@ export default function DestinationCard({
   const bestMonth: string | undefined = dest.best_month ?? analysis.best_month;
   const avoidMonths: string[] = dest.avoid_months ?? analysis.avoid_months ?? [];
 
+  // Build the same short "<city> <keyword>" terms the detail page will use.
+  const terms = React.useMemo(() => buildSimpleTermsFromDest(dest, 16), [dest]);
+  const prewarmNow = React.useCallback(() => {
+    if (terms.length) prewarmImages(terms, 16).catch(() => {});
+  }, [terms.join("|")]);
+
+  // Prewarm when the card is near the viewport (smooth scroll hoverless devices)
+  const ref = React.useRef<HTMLAnchorElement | null>(null);
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!el || !terms.length) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((e) => {
+          if (e.isIntersecting) {
+            prewarmNow();
+            io.disconnect();
+          }
+        });
+      },
+      { rootMargin: "200px" }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [terms, prewarmNow]);
+
   return (
     <Link
+      ref={ref}
       href={href}
       className="block rounded-2xl border bg-gradient-to-br from-white to-sky-50/60 p-4 shadow-sm hover:shadow-md transition-shadow"
+      onMouseEnter={prewarmNow}
+      onFocus={prewarmNow}
     >
       <div className="flex items-start gap-3">
         <div className="h-10 w-10 shrink-0 rounded-xl bg-sky-100 grid place-items-center text-sky-700">

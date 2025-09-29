@@ -28,10 +28,17 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
+      <head>
+        {/* Speed up Wikimedia image fetches */}
+        <link rel="preconnect" href="https://commons.wikimedia.org" />
+        <link rel="preconnect" href="https://upload.wikimedia.org" />
+        <link rel="dns-prefetch" href="https://commons.wikimedia.org" />
+        <link rel="dns-prefetch" href="https://upload.wikimedia.org" />
+      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        <div className="flex h-screen bg-gray-200 w-full flex-col  text-stone-900">
+        <div className="flex h-screen bg-gray-200 w-full flex-col text-stone-900">
           <main>{children}</main>
         </div>
       </body>
