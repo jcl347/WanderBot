@@ -1,79 +1,65 @@
+// components/LiveCollage.tsx
 "use client";
 
 import * as React from "react";
 import LivePhotoPane from "./LivePhotoPane";
 
-/**
- * Three-column layout with sticky image rails on desktop.
- * - Desktop (md+): [ left rail | children | right rail ]
- * - Mobile: children then a merged bottom collage
- */
+type Props = {
+  leftTerms?: string[];
+  rightTerms?: string[];
+  /** If omitted, mobile uses both left+right terms merged at bottom */
+  bottomTerms?: string[];
+  children: React.ReactNode;
+  /** Default rail widths adjusted responsively */
+  className?: string;
+  railClassName?: string;
+};
+
 export default function LiveCollage({
   leftTerms = [],
   rightTerms = [],
   bottomTerms,
-  railWidth = 480,
   children,
   className = "",
   railClassName = "",
-}: {
-  leftTerms?: string[];
-  rightTerms?: string[];
-  bottomTerms?: string[];
-  railWidth?: number;
-  children: React.ReactNode;
-  className?: string;
-  railClassName?: string;
-}) {
+}: Props) {
   const mergedBottom = React.useMemo(() => {
     const b = bottomTerms && bottomTerms.length ? bottomTerms : [...leftTerms, ...rightTerms];
-    return Array.from(new Set(b)).slice(0, 18);
+    return Array.from(new Set(b)).slice(0, 16);
   }, [bottomTerms, leftTerms, rightTerms]);
 
   return (
     <div className={className}>
-      {/* Mobile: children then a bottom collage */}
-      <div className="md:hidden space-y-6">
+      {/* Mobile: content then one collage rail underneath */}
+      <div className="md:hidden space-y-4">
         <div>{children}</div>
         {mergedBottom.length > 0 && (
-          <div className="mt-2">
-            <LivePhotoPane terms={mergedBottom} count={14} side="bottom" className="max-h-[80vh]" />
-          </div>
+          <LivePhotoPane terms={mergedBottom} count={16} side="left" className={railClassName} />
         )}
       </div>
 
-      {/* Desktop: true three-column grid */}
+      {/* Desktop and up: sticky rails with a *wide* middle column */}
       <div
-        className="hidden md:grid gap-6"
-        style={{
-          gridTemplateColumns: `${railWidth}px minmax(0,1fr) ${railWidth}px`,
-        }}
+        className={[
+          "hidden md:grid gap-6 mx-auto px-4",
+          // min 380–460px rails, center min 720–840px
+          "lg:grid-cols-[minmax(340px,380px)_minmax(640px,1fr)_minmax(340px,380px)]",
+          "xl:grid-cols-[minmax(380px,420px)_minmax(720px,1fr)_minmax(380px,420px)]",
+          "2xl:grid-cols-[minmax(420px,460px)_minmax(840px,1fr)_minmax(420px,460px)]",
+          "max-w-[1900px]",
+        ].join(" ")}
       >
-        <div className="self-start">
+        <div className="sticky top-20 self-start">
           {leftTerms.length > 0 && (
-            <LivePhotoPane
-              terms={leftTerms}
-              count={24}
-              side="left"
-              railWidth={railWidth}
-              tileWidth={Math.min(300, Math.floor(railWidth * 0.9))}
-              className={railClassName}
-            />
+            <LivePhotoPane terms={leftTerms} count={24} side="left" className={railClassName} />
           )}
         </div>
 
-        <div className="min-w-0">{children}</div>
+        <div>{children}</div>
 
-        <div className="self-start">
+        <div className="sticky top-20 self-start">
           {rightTerms.length > 0 && (
-            <LivePhotoPane
-              terms={rightTerms}
-              count={24}
-              side="right"
-              railWidth={railWidth}
-              tileWidth={Math.min(300, Math.floor(railWidth * 0.9))}
-              className={railClassName}
-            />
+            <LivePhotoPane terms={rightTerms} count={24} side="right" className={railClassName} />
           )}
         </div>
       </div>

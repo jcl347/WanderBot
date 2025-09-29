@@ -1,3 +1,4 @@
+// components/DestDetailClient.tsx
 "use client";
 
 import * as React from "react";
@@ -81,7 +82,7 @@ function fillAndSmoothMonths(raw: Fare[]): Fare[] {
   });
 }
 
-function buildCityTerms(dest: any, limit = 18) {
+function buildCityTerms(dest: any, limit = 16) {
   const name: string = String(dest?.name || "").trim();
   const analysis = dest?.analysis ?? {};
   const model: string[] = Array.isArray(analysis.image_queries)
@@ -166,20 +167,13 @@ export default function DestDetailClient({ dest }: { dest: any }) {
   }
   const center: [number, number] | undefined = hasCenter ? [mc.lat, mc.lon] : pins[0]?.position;
 
-  const simpleTerms = React.useMemo(() => buildCityTerms(dest, 22), [dest]);
-  const mid = Math.max(1, Math.ceil(simpleTerms.length / 2));
-  const leftTerms = simpleTerms.slice(0, mid);
-  const rightTerms = simpleTerms.slice(mid);
+  const terms = React.useMemo(() => buildCityTerms(dest, 16), [dest]);
+  const mid = Math.max(1, Math.ceil(terms.length / 2));
+  const leftTerms = terms.slice(0, mid);
+  const rightTerms = terms.slice(mid);
 
   return (
-    <LiveCollage
-      leftTerms={leftTerms}
-      rightTerms={rightTerms}
-      railWidth={480}               // <<< WIDE rails
-      railClassName="max-h-[calc(100vh-8rem)]"
-      className="mt-6"
-    >
-      {/* Center column content */}
+    <LiveCollage leftTerms={leftTerms} rightTerms={rightTerms} className="mt-6">
       <div className="space-y-6">
         <SectionCard>
           <h1 className="text-3xl font-semibold">{dest.name}</h1>
@@ -218,7 +212,9 @@ export default function DestDetailClient({ dest }: { dest: any }) {
               <MapLeaflet center={center} zoom={pins.length > 1 ? 11 : 8} markers={pins} />
             </div>
           ) : (
-            <div className="text-sm text-neutral-500">No map data available for this destination.</div>
+            <div className="text-sm text-neutral-500">
+              No map data available for this destination.
+            </div>
           )}
         </SectionCard>
 

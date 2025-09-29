@@ -1,7 +1,8 @@
+// components/LivePhotoPane.tsx
 "use client";
 
 import * as React from "react";
-import NextImage from "next/image";
+import Image from "next/image";
 
 type Photo = {
   id: string;
@@ -11,137 +12,140 @@ type Photo = {
   alt?: string;
 };
 
-type Side = "left" | "right" | "bottom";
-
 type Props = {
-  /** Search terms (already city-keyword style) */
+  /** Search terms to guide the images API */
   terms: string[];
-  /** How many images to show */
+  /** Target number of images to show */
   count?: number;
-  /** Which rail is this? Decides orientation + sizing */
-  side?: Side;
-  /** Extra classes */
+  /** Which rail is this? Affects orientation hint + sizes */
+  side?: "left" | "right";
+  /** Extra classes for the scroll container */
   className?: string;
-  /** Target rail width in px (used for sizes attr) */
-  railWidth?: number;
-  /** Tile width in px on desktop rails */
-  tileWidth?: number;
+  /** Optional seed photos to render immediately (server provided) */
+  initial?: Photo[];
 };
+
+const BLUR =
+  "data:image/svg+xml;charset=utf8," +
+  encodeURIComponent(
+    `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><filter id='b'><feGaussianBlur stdDeviation='1.5' /></filter><rect width='10' height='10' fill='#e5f2ff' filter='url(#b)'/></svg>`
+  );
 
 export default function LivePhotoPane({
   terms,
-  count = 18,
+  count = 24,
   side = "left",
   className = "",
-  railWidth = 480,
-  tileWidth = 260,
+  initial,
 }: Props) {
-  const [photos, setPhotos] = React.useState<Photo[] | null>(null);
+  const [photos, setPhotos] = React.useState<Photo[] | null>(initial || null);
   const [error, setError] = React.useState<string | null>(null);
 
-  const orientation = side === "bottom" ? "any" : "portrait";
-
-  // Build query once
-  const query = React.useMemo(() => {
-    const origin =
-      typeof window === "undefined" ? "http://localhost" : window.location.origin;
-    const u = new URL("/api/images", origin);
-    u.searchParams.set("terms", JSON.stringify(terms.slice(0, 12)));
-    u.searchParams.set("count", String(count));
-    u.searchParams.set("orientation", orientation);
-    return u.pathname + u.search;
-  }, [terms, count, orientation]);
-
-  // Fetch images
+  // Fetch (or refetch) images. We hint side for better aspect picks.
   React.useEffect(() => {
-    let cancelled = false;
-    (async () => {
+    const controller = new AbortController();
+    const run = async () => {
       try {
-        setError(null);
-        const res = await fetch(query, { cache: "force-cache" });
+        const url = new URL("/api/images", window.location.origin);
+        url.searchParams.set("terms", JSON.stringify(terms.slice(0, 14)));
+        url.searchParams.set("count", String(count));
+        url.searchParams.set("side", side === "right" ? "landscape" : "portrait");
+
+        const res = await fetch(url.toString(), {
+          signal: controller.signal,
+          headers: { "cache-control": "max-age=60" },
+        });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = (await res.json()) as Photo[];
-        if (!cancelled) setPhotos(json);
+        const json: Photo[] = await res.json();
+        setPhotos((prev) => (prev && prev.length ? prev : json));
+        // Preload early items for instant paint
+        for (const p of json.slice(0, 6)) {
+          const img = new window.Image();
+          img.decoding = "async";
+          img.loading = "eager";
+          img.src = p.src;
+        }
       } catch (e: any) {
-        if (!cancelled) setError(e?.message || "Failed to load images");
+        if (e?.name !== "AbortError") setError(e?.message || "Failed to load images");
       }
-    })();
-    return () => {
-      cancelled = true;
     };
-  }, [query]);
+    if (!initial || !initial.length) run();
+    return () => controller.abort();
+  }, [terms, count, side, initial]);
 
-  // Preload top images aggressively (use DOM Image, not next/image)
-  React.useEffect(() => {
-    if (!photos || photos.length === 0) return;
-    const top = photos.slice(0, 6);
-    top.forEach((p) => {
-      try {
-        const img = new window.Image();
-        img.src = p.src;
-      } catch {
-        /* no-op */
-      }
-    });
-  }, [photos]);
-
-  const railHeight = "calc(100vh - 8rem)";
+  // “Rail” sizing: big cells with generous padding
+  const sizes =
+    side === "right"
+      ? "(min-width:1536px) 460px, (min-width:1280px) 420px, (min-width:1024px) 360px, 100vw"
+      : "(min-width:1536px) 460px, (min-width:1280px) 420px, (min-width:1024px) 360px, 100vw";
 
   return (
-    <div
+    <aside
       className={[
-        "sticky top-24 overflow-y-auto",
-        "rounded-2xl bg-white/50 backdrop-blur-sm shadow-sm",
+        "rounded-2xl border bg-white/60 backdrop-blur sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto",
+        "shadow-sm hover:shadow-md transition-shadow",
         "p-3",
-        className || "",
+        className,
       ].join(" ")}
-      style={{ height: railHeight }}
+      aria-busy={!photos && !error}
     >
       {!photos && !error && (
-        <div className="grid grid-cols-1 gap-3 animate-pulse">
-          {Array.from({ length: 10 }).map((_, i) => (
-            <div key={i} className="h-48 rounded-xl bg-neutral-200" />
+        <div className="grid gap-3">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div
+              key={i}
+              className="h-56 rounded-xl bg-gradient-to-br from-sky-50 to-sky-100/60 animate-pulse"
+            />
           ))}
         </div>
       )}
 
       {error && (
         <div className="text-sm text-rose-700">
-          Couldn&apos;t load images. {error}
+          Couldn’t load photos. {error}
         </div>
       )}
 
       {photos && (
-        <div className="grid grid-cols-1 gap-3">
+        <div className="grid gap-3">
           {photos.map((p, i) => {
-            const w = side === "bottom" ? Math.min(640, p.width) : tileWidth;
-            const ratio =
-              p.width > 0 && p.height > 0 ? p.height / p.width : 2 / 3;
-            const h = Math.round(w * ratio);
+            const eager = i < 4; // eager-load first few
+            const ratio = Math.max(1, p.width) / Math.max(1, p.height);
+            // keep tall feel on left, wide feel on right, but always big
+            const h =
+              side === "right"
+                ? Math.max(240, Math.min(420, Math.round(340 / Math.max(1, ratio))))
+                : Math.max(300, Math.min(520, Math.round(420 * (1 / Math.max(1, ratio)))));
 
             return (
-              <div
-                key={`${p.id}-${i}`}
-                className="rounded-xl overflow-hidden shadow-sm border border-neutral-200/60"
-              >
-                <NextImage
+              <figure key={p.id} className="rounded-xl overflow-hidden border bg-white/70">
+                <Image
                   src={p.src}
-                  alt={p.alt || "Travel photo"}
-                  width={w}
-                  height={h}
-                  priority={i < 4}
-                  sizes={
-                    side === "bottom"
-                      ? "(max-width: 768px) 100vw, 640px"
-                      : `(min-width: 1024px) ${railWidth}px, 100vw`
-                  }
-                  className="w-full h-auto object-cover"
+                  alt={p.alt || ""}
+                  width={p.width || 1200}
+                  height={p.height || 800}
+                  // Fill rail width with large visible images
+                  sizes={sizes}
+                  priority={eager}
+                  placeholder="blur"
+                  blurDataURL={BLUR}
+                  style={{
+                    width: "100%",
+                    height: `${h}px`,
+                    objectFit: "cover",
+                    display: "block",
+                  }}
                 />
-              </div>
+                {p.alt && (
+                  <figcaption className="px-3 py-2 text-xs text-neutral-700 line-clamp-2">
+                    {p.alt}
+                  </figcaption>
+                )}
+              </figure>
             );
           })}
         </div>
       )}
-    </div>
+    </aside>
   );
 }
