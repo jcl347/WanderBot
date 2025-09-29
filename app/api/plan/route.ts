@@ -622,7 +622,7 @@ export async function POST(req: NextRequest) {
       model: MODEL,
       response_format: { type: "json_object" },
       temperature: 0.2,
-      max_tokens: 6500,
+      max_tokens: 7500,
       messages: [
         {
           role: "system",

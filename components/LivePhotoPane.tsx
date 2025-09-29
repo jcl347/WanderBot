@@ -1,141 +1,166 @@
-// components/LivePhotoPane.tsx
 "use client";
 
 import * as React from "react";
-import NextImage from "next/image";
+import Image from "next/image";
+import clsx from "clsx";
 
-type Img = { url: string; title?: string; source?: string; license?: string };
+/** Simple photo shape returned by /api/images */
+type Photo = {
+  id: string;
+  src: string;
+  width: number;
+  height: number;
+  alt?: string;
+};
+
+/** In-memory cache so switching pages doesn’t refetch */
+const memory = new Map<string, Photo[]>();
 
 type Props = {
-  terms: string[];    // required – short "<city> <keyword>" phrases
-  count?: number;     // total images target
-  side?: "left" | "right" | "bottom";
+  terms: string[];
+  /** target number of images to show */
+  count?: number;
+  /** "left" | "right" just for data-attributes and future styling hooks */
+  orientation?: "left" | "right";
+  /** Tailwind classes for the wrapper */
   className?: string;
+  /** Pixel height of each tile (rail). Defaults to 260px. */
+  tileHeight?: number;
+  /** Optional: make images even larger on xl+ screens */
+  xlBigger?: boolean;
 };
+
+/** tiny 1x1 blur to avoid layout shifts (keeps it light) */
+const BLUR =
+  "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEAAAAALAAAAAABAAEAAAI=";
 
 export default function LivePhotoPane({
   terms,
   count = 12,
-  side = "left",
+  orientation = "left",
   className = "",
+  tileHeight = 260,
+  xlBigger = true,
 }: Props) {
-  const [images, setImages] = React.useState<Img[]>([]);
-  const [loading, setLoading] = React.useState<boolean>(false);
-  const [errorText, setErrorText] = React.useState<string | null>(null);
+  const key = React.useMemo(
+    () => JSON.stringify({ t: [...new Set(terms.map((t) => t.trim().toLowerCase()))], c: count }),
+    [terms, count]
+  );
 
-  const termsKey = React.useMemo(() => terms.join("|"), [terms]);
+  const [photos, setPhotos] = React.useState<Photo[]>(
+    () => memory.get(key) ?? []
+  );
+  const [loading, setLoading] = React.useState(!memory.has(key));
+  const [error, setError] = React.useState<string | null>(null);
 
+  // Fetch as soon as mounted (no need to wait for intersection for rails)
   React.useEffect(() => {
     let cancelled = false;
-
-    async function run() {
-      if (!terms.length) {
-        setImages([]);
+    async function go() {
+      if (memory.has(key)) {
+        setPhotos(memory.get(key)!);
+        setLoading(false);
         return;
       }
-
+      setLoading(true);
+      setError(null);
       try {
-        setLoading(true);
-        setErrorText(null);
-
-        const body = { terms, count: Math.max(8, Math.min(24, count * 2)) };
-        const res = await fetch("/api/images", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(body),
-          cache: "no-store",
+        const u = new URL("/api/images", window.location.origin);
+        // pass terms as comma string (route supports both comma and JSON)
+        u.searchParams.set("terms", terms.join(","));
+        u.searchParams.set("count", String(count));
+        // prefer tall-ish images for rails
+        u.searchParams.set("orientation", "portrait");
+        const res = await fetch(u.toString(), {
+          headers: { "x-rail": orientation },
+          cache: "force-cache",
         });
-
-        if (!res.ok) throw new Error(`images api ${res.status}`);
-        const json = await res.json();
-
-        const imgs: Img[] = Array.isArray(json?.images)
-          ? (json.images as Img[]).filter((x) => typeof x?.url === "string")
-          : [];
-
-        if (cancelled) return;
-
-        // Preload aggressively
-        if (typeof window !== "undefined") {
-          imgs.slice(0, count).forEach((im) => {
-            const i = new (window as any).Image() as HTMLImageElement;
-            i.decoding = "async";
-            i.loading = "eager";
-            i.src = im.url;
-          });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data: Photo[] = await res.json();
+        if (!cancelled) {
+          memory.set(key, data);
+          setPhotos(data);
+          setLoading(false);
         }
-
-        setImages(imgs.slice(0, count));
       } catch (e: any) {
         if (!cancelled) {
-          setErrorText(e?.message || "Failed to load images");
-          setImages([]);
+          setError(e?.message || "Failed to load images");
+          setLoading(false);
         }
-      } finally {
-        if (!cancelled) setLoading(false);
       }
     }
-
-    run();
+    go();
     return () => {
       cancelled = true;
     };
-  }, [count, termsKey]);
+  }, [key, terms, count, orientation]);
+
+  // Skeletons while loading — match final tile height so there’s no jank
+  const skeletons = Array.from({ length: Math.min(count, 8) }, (_, i) => (
+    <div
+      key={`s-${i}`}
+      className="w-full animate-pulse rounded-xl bg-neutral-200/70"
+      style={{ height: tileHeight }}
+    />
+  ));
+
+  const railSizes =
+    "(min-width:1536px) 560px, (min-width:1280px) 520px, (min-width:1024px) 480px, 100vw";
+
+  const railClasses = clsx(
+    "grid gap-4",
+    // one big image per row; rails feel more premium vs mosaic thumbs
+    "grid-cols-1",
+    className
+  );
 
   return (
-    <div
-      className={[
-        "rounded-xl border bg-white/70 p-2 md:p-3 shadow-sm",
-        side === "left" ? "mr-2" : side === "right" ? "ml-2" : "mt-3",
-        className,
-      ].join(" ")}
+    <section
+      className={railClasses}
+      data-rail={orientation}
+      aria-label={`${orientation} photo rail`}
     >
-      {errorText ? (
-        <div className="text-xs text-neutral-500">
-          No images found for: {terms.join(", ")}
-        </div>
-      ) : loading && images.length === 0 ? (
-        <div className="text-xs text-neutral-500">
-          Loading images for {terms.join(" · ")}…
-        </div>
-      ) : (
-        <div
-          className="
-            grid gap-3
-            grid-cols-2
-            sm:grid-cols-3
-            lg:grid-cols-2
-            xl:grid-cols-3
-            2xl:grid-cols-3
-          "
-        >
-          {images.map((img, i) => {
-            const tall = i % 6 === 0;
-            const wide = i % 5 === 0 && !tall;
-            const baseCls =
-              "relative rounded-xl overflow-hidden bg-neutral-100 shadow";
+      {loading && skeletons}
 
-            const boxCls = tall
-              ? `${baseCls} row-span-2 h-[420px]`
-              : wide
-              ? `${baseCls} col-span-2 h-[280px]`
-              : `${baseCls} h-[220px]`;
-
-            return (
-              <div key={`${img.url}-${i}`} className={boxCls}>
-                <NextImage
-                  src={img.url}
-                  alt={img.title || "travel photo"}
-                  fill
-                  sizes="(max-width: 768px) 50vw, (max-width: 1280px) 33vw, 33vw"
-                  className="object-cover"
-                  priority={i < 6}
-                />
-              </div>
-            );
-          })}
+      {!loading && error && (
+        <div className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-3">
+          {error}
         </div>
       )}
-    </div>
+
+      {!loading &&
+        !error &&
+        photos.slice(0, count).map((p, idx) => {
+          // Give the first few tiles priority for instant paint
+          const priority = idx < 2;
+          // Make tiles a bit taller on xl+ if desired
+          const h =
+            xlBigger && typeof window === "undefined"
+              ? tileHeight
+              : tileHeight;
+
+          return (
+            <div
+              key={p.id || p.src || idx}
+              className="relative w-full overflow-hidden rounded-xl border border-neutral-200 bg-white"
+              style={{ height: h }}
+            >
+              <Image
+                src={p.src}
+                alt={p.alt || ""}
+                fill
+                sizes={railSizes}
+                // cover so tall rails look great
+                style={{ objectFit: "cover" }}
+                // small blur to smooth-in
+                placeholder="blur"
+                blurDataURL={BLUR}
+                // speed up above-the-fold
+                priority={priority}
+              />
+            </div>
+          );
+        })}
+    </section>
   );
 }
