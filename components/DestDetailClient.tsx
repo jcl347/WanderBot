@@ -16,7 +16,6 @@ type Fare = {
 type Marker = { name?: string; position?: [number, number] };
 
 function formatMonthYYYY(mm: string) {
-  // expects "YYYY-MM"
   const [y, m] = String(mm).split("-");
   const d = new Date(Number(y), Number(m) - 1, 1);
   return isNaN(d.getTime())
@@ -24,7 +23,6 @@ function formatMonthYYYY(mm: string) {
     : d.toLocaleDateString(undefined, { year: "numeric", month: "long" });
 }
 
-/** Clamp & light median smoothing to tamp down spikes */
 function smoothFareSeries(series: { month: string; avgUSD: number }[]) {
   if (!Array.isArray(series) || series.length === 0) return [];
   const s = series
@@ -54,9 +52,7 @@ function smoothFareSeries(series: { month: string; avgUSD: number }[]) {
   return out;
 }
 
-/** Fill missing months by carrying the avg across the visible window (3-month local) */
 function fillAndSmoothMonths(raw: Fare[]): Fare[] {
-  // Determine months we’ll graph from the data; fallback to current + next 2
   const set = new Set<string>();
   for (const f of raw) for (const m of f.monthBreakdown || []) if (m?.month) set.add(m.month.slice(0, 7));
   let months = Array.from(set).sort();
@@ -87,27 +83,22 @@ function fillAndSmoothMonths(raw: Fare[]): Fare[] {
   });
 }
 
-/** Build simple “City + one word” image terms using model-provided hints if present. */
 function buildCityTerms(dest: any, limit = 12) {
   const name: string = String(dest?.name || "").trim();
   const analysis = dest?.analysis ?? {};
-  const model = Array.isArray(analysis.image_queries)
-    ? analysis.image_queries
-        .filter((s: unknown) => typeof s === "string" && s.trim())
-        .map((s: string) => s.trim())
+  const model: string[] = Array.isArray(analysis.image_queries)
+    ? analysis.image_queries.filter((s: unknown): s is string => typeof s === "string" && !!s.trim())
     : [];
 
   if (model.length) {
-    // Force each term to "City + one word/short phrase"
-    const cleaned = model.map((t) => {
+    const cleaned = model.map((t: string) => {
       const one = t.replace(/\s+/g, " ").trim();
-      if (one.toLowerCase().startsWith(name.toLowerCase() + " ")) return one;
+      if (name && one.toLowerCase().startsWith(name.toLowerCase() + " ")) return one;
       return name ? `${name} ${one}` : one;
     });
     return Array.from(new Set(cleaned)).slice(0, limit);
   }
 
-  // Otherwise generate a small, simple set
   const basics = [
     "skyline",
     "downtown",
@@ -119,19 +110,17 @@ function buildCityTerms(dest: any, limit = 12) {
     "street",
     "festival",
     "landmarks",
-  ].map((k) => `${name} ${k}`);
+  ].map((k) => (name ? `${name} ${k}` : k));
 
   return Array.from(new Set(basics)).slice(0, limit);
 }
 
 export default function DestDetailClient({ dest }: { dest: any }) {
-  // ---- Fares (filled + smoothed) ----
   const fares = React.useMemo(() => {
     const raw: Fare[] = Array.isArray(dest?.per_traveler_fares) ? dest.per_traveler_fares : [];
     return fillAndSmoothMonths(raw);
   }, [dest?.per_traveler_fares]);
 
-  // ---- Months for the time series ----
   const months = React.useMemo(() => {
     const s = new Set<string>();
     for (const f of fares) for (const m of f.monthBreakdown || []) s.add(m.month);
@@ -145,7 +134,6 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     return [a, b, c].map((x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}`);
   }, [fares]);
 
-  // ---- Series for MonthLine ----
   const series = React.useMemo(() => {
     return months.map((m) => {
       const row: Record<string, number | string | null> = { month: m };
@@ -157,7 +145,6 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     });
   }, [months, fares]);
 
-  // ---- Map pins ----
   const analysis = dest?.analysis ?? {};
   const rawMarkers: Marker[] = Array.isArray(analysis.map_markers) ? analysis.map_markers : [];
 
@@ -181,10 +168,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
   }
   const center: [number, number] | undefined = hasCenter ? [mc.lat, mc.lon] : pins[0]?.position;
 
-  // ---- Image terms (simple) ----
   const simpleTerms = React.useMemo(() => buildCityTerms(dest, 12), [dest]);
-
-  // Split list in half for left/right rails
   const mid = Math.max(1, Math.ceil(simpleTerms.length / 2));
   const leftTerms = simpleTerms.slice(0, mid);
   const rightTerms = simpleTerms.slice(mid);
@@ -256,7 +240,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
         </SectionCard>
       </div>
 
-      {/* Collage AT THE BOTTOM (as requested) and wider on large screens */}
+      {/* Bottom collage, wide rails */}
       <div className="mt-6 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] gap-4">
         <LivePhotoPane terms={leftTerms} count={12} orientation="left" />
         <LivePhotoPane terms={rightTerms} count={12} orientation="right" />

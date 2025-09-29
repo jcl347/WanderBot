@@ -1,13 +1,11 @@
-// components/LivePhotoPane.tsx
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
-import NextImage from "next/image"; // alias to avoid shadowing window.Image
+import * as React from "react";
+import NextImage from "next/image";
 
 type Img = { url: string; title?: string; source?: string; license?: string };
 
 type Props = {
-  // EITHER `query` OR `terms`; if `query` given we split by comma into simple terms.
   query?: string;
   terms?: string[];
   count?: number;
@@ -15,73 +13,113 @@ type Props = {
   className?: string;
 };
 
-function toTerms(query?: string, terms?: string[]) {
-  if (Array.isArray(terms) && terms.length) {
-    return terms.filter((s) => typeof s === "string" && s.trim());
+function firstToken(s: string): string {
+  const parts = String(s || "").split(/[,(|-]/);
+  return (parts[0] || s || "").trim();
+}
+
+function buildSimpleTerms(query?: string, terms?: string[], want = 10): string[] {
+  const city = firstToken(String(query || "").trim());
+  const fromProps = (terms || []).filter(Boolean);
+
+  if (!city && !fromProps.length) return [];
+
+  if (fromProps.length) {
+    return Array.from(
+      new Set(
+        fromProps
+          .map((t) => String(t).trim())
+          .filter(Boolean)
+          .map((t) => {
+            const one = t.replace(/\s+/g, " ").trim();
+            if (city && one.toLowerCase().startsWith(city.toLowerCase() + " ")) return one;
+            return city ? `${city} ${one}` : one;
+          })
+      )
+    ).slice(0, want);
   }
-  const q = (query || "").trim();
-  if (!q) return [];
-  return q
-    .split(",")
-    .map((x) => x.trim())
-    .filter(Boolean);
+
+  const defaults = [
+    "skyline",
+    "downtown",
+    "beach",
+    "harbor",
+    "park",
+    "museum",
+    "nightlife",
+    "market",
+    "street",
+    "festival",
+    "landmarks",
+  ];
+
+  const out = defaults.map((k) => (query ? `${city} ${k}` : k));
+  return Array.from(new Set(out)).slice(0, want);
 }
 
 export default function LivePhotoPane({
   query,
   terms,
-  count = 14,
+  count = 10,
   orientation = "left",
   className = "",
 }: Props) {
-  const [images, setImages] = useState<Img[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const simpleTerms = React.useMemo(() => buildSimpleTerms(query, terms, count * 2), [query, terms, count]);
 
-  const simpleTerms = useMemo(() => toTerms(query, terms).slice(0, 8), [query, terms]);
-  const termsKey = useMemo(() => simpleTerms.join("|"), [simpleTerms]);
+  const [images, setImages] = React.useState<Img[]>([]);
+  const [loading, setLoading] = React.useState<boolean>(false);
+  const [errorText, setErrorText] = React.useState<string | null>(null);
 
-  useEffect(() => {
+  const termsKey = React.useMemo(() => simpleTerms.join("|"), [simpleTerms]);
+
+  React.useEffect(() => {
     let cancelled = false;
 
     async function run() {
-      setErr(null);
-      setImages(null);
-
       if (!simpleTerms.length) {
         setImages([]);
         return;
       }
 
       try {
+        setLoading(true);
+        setErrorText(null);
+
+        const body = { q: simpleTerms.join(", "), count: Math.max(8, Math.min(24, count * 2)) };
         const res = await fetch("/api/images", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ terms: simpleTerms, count }),
+          body: JSON.stringify(body),
           cache: "no-store",
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = (await res.json()) as { images: Img[] };
-        const imgs = Array.isArray(json?.images) ? json.images.slice(0, count) : [];
 
-        // Preload to avoid popping (guard for SSR)
+        if (!res.ok) throw new Error(`images api ${res.status}`);
+        const json = await res.json();
+
+        const imgs: Img[] = Array.isArray(json?.images)
+          ? (json.images as Img[]).filter((x) => typeof x?.url === "string")
+          : [];
+
+        if (cancelled) return;
+
+        // Preload
         if (typeof window !== "undefined") {
-          imgs.forEach((im) => {
-            try {
-              const pre = new window.Image();
-              pre.src = im.url;
-            } catch {
-              /* noop */
-            }
+          imgs.slice(0, count).forEach((im) => {
+            const i = new (window as any).Image() as HTMLImageElement;
+            i.decoding = "async";
+            i.loading = "eager";
+            i.src = im.url;
           });
         }
 
-        if (!cancelled) setImages(imgs);
+        setImages(imgs.slice(0, count));
       } catch (e: any) {
         if (!cancelled) {
-          console.error("[LivePhotoPane] error", e?.message || e);
-          setErr("Couldn’t load images.");
+          setErrorText(e?.message || "Failed to load images");
           setImages([]);
         }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     }
 
@@ -89,46 +127,55 @@ export default function LivePhotoPane({
     return () => {
       cancelled = true;
     };
-    // keep deps simple; eslint wants actual vars, not complex expressions
-  }, [count, termsKey]);
-
-  const side =
-    orientation === "left"
-      ? "justify-start md:justify-end pr-0 md:pr-2"
-      : "justify-start md:justify-start pl-0 md:pl-2";
+  }, [count, termsKey, simpleTerms]);
 
   return (
-    <div className={`relative w-full ${className}`}>
-      {!images && (
-        <div className="text-xs text-neutral-500 px-3 py-2 rounded-lg bg-white/60 border">
-          Loading images for {simpleTerms.join(", ")}…
-        </div>
-      )}
-      {images && images.length === 0 && (
-        <div className="text-xs text-neutral-500 px-3 py-2 rounded-lg bg-white/60 border">
-          {err ? err : `No images found for: ${simpleTerms.join(", ")}`}
-        </div>
-      )}
-      {images && images.length > 0 && (
+    <div
+      className={[
+        "rounded-xl border bg-white/60 p-2 md:p-3",
+        orientation === "left" ? "mr-2" : "ml-2",
+        className,
+      ].join(" ")}
+    >
+      {errorText ? (
+        <div className="text-xs text-neutral-500">No images found for: {simpleTerms.join(", ")}</div>
+      ) : loading && images.length === 0 ? (
+        <div className="text-xs text-neutral-500">Loading images for {simpleTerms.join(" · ")}…</div>
+      ) : (
         <div
-          className={`grid grid-cols-3 gap-2 md:gap-3 ${side}`}
-          style={{ gridAutoRows: "90px" }}
+          className="
+            grid gap-2
+            grid-cols-2
+            sm:grid-cols-3
+            lg:grid-cols-2
+            xl:grid-cols-3
+            2xl:grid-cols-3
+          "
         >
-          {images.map((im, i) => (
-            <div
-              key={`${im.url}-${i}`}
-              className={`relative rounded-xl overflow-hidden shadow-sm ${i % 7 === 0 ? "row-span-2" : ""}`}
-            >
-              <NextImage
-                src={im.url}
-                alt={im.title || "Photo"}
-                fill
-                sizes="(max-width: 768px) 33vw, 360px"
-                style={{ objectFit: "cover" }}
-                priority={i < 4}
-              />
-            </div>
-          ))}
+          {images.map((img, i) => {
+            const tall = i % 7 === 0;
+            const wide = i % 5 === 0 && !tall;
+            const baseCls = "relative rounded-xl overflow-hidden bg-neutral-100";
+
+            const boxCls = tall
+              ? `${baseCls} row-span-2 h-[340px]`
+              : wide
+              ? `${baseCls} col-span-2 h-[220px]`
+              : `${baseCls} h-[160px]`;
+
+            return (
+              <div key={`${img.url}-${i}`} className={boxCls}>
+                <NextImage
+                  src={img.url}
+                  alt={img.title || "travel photo"}
+                  fill
+                  sizes="(max-width: 768px) 50vw, (max-width: 1280px) 33vw, 33vw"
+                  className="object-cover"
+                  priority={i < 6}
+                />
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
