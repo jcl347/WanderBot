@@ -1,27 +1,24 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  poweredByHeader: false,
-
-  // Keep CI green while you iterate; tighten later if you like.
-  eslint: { ignoreDuringBuilds: true },
-  typescript: { ignoreBuildErrors: true },
-
+  experimental: {
+    optimizeCss: true,
+  },
   images: {
+    // Allow Wikimedia thumbnails/full-size
     remotePatterns: [
       { protocol: "https", hostname: "upload.wikimedia.org" },
       { protocol: "https", hostname: "commons.wikimedia.org" },
-      { protocol: "https", hostname: "images.unsplash.com" }, // optional
+      // (Occasionally thumb proxies live on *.wikimedia.org)
+      { protocol: "https", hostname: "*.wikimedia.org" },
     ],
   },
-
-  async headers() {
-    return [
-      {
-        source: "/api/images",
-        headers: [{ key: "Cache-Control", value: "public, max-age=60, stale-while-revalidate=300" }],
-      },
-    ];
+  devIndicators: {
+    position: "bottom-left",
   },
+  transpilePackages: [],
+  // “critters” module error during 404 prerender often happens when
+  // a custom _document tries to inline CSS. Ensure no custom _document uses it,
+  // otherwise let Next handle CSS inlining.
 };
 
 export default nextConfig;
