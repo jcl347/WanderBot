@@ -29,18 +29,15 @@ function clamp(n: number, lo: number, hi: number) {
 }
 
 function fillAndSmoothMonths(fares: Fare[]) {
-  // union of months across all travelers
   const months = new Set<string>();
   for (const f of fares) for (const m of f.monthBreakdown || []) months.add(m.month.slice(0, 7));
   const sortedMonths = Array.from(months).sort();
 
-  // fill missing months using nearest neighbor, then clamp and light smooth
   return fares.map((f) => {
     const map = new Map<string, number>();
     (f.monthBreakdown || []).forEach((m) => map.set(m.month.slice(0, 7), m.avgUSD));
     const series = sortedMonths.map((m) => {
       if (map.has(m)) return { month: m, avgUSD: clamp(map.get(m)!, 60, 5000) };
-      // nearest neighbor fallback
       const vals = Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
       if (!vals.length) return { month: m, avgUSD: clamp(f.avgUSD, 60, 5000) };
       const before = vals.filter(([mm]) => mm <= m).pop();
@@ -50,7 +47,6 @@ function fillAndSmoothMonths(fares: Fare[]) {
       return { month: m, avgUSD: clamp(v, 60, 5000) };
     });
 
-    // 3-point median smooth
     const sm = series.map((x, i) => {
       const win = [series[i - 1]?.avgUSD, x.avgUSD, series[i + 1]?.avgUSD].filter(
         (v) => typeof v === "number"
@@ -74,21 +70,20 @@ function fillAndSmoothMonths(fares: Fare[]) {
 
 export default function DestDetailClient({ dest }: { dest: any }) {
   const faresRaw: Fare[] = Array.isArray(dest?.per_traveler_fares) ? dest.per_traveler_fares : [];
-  const fares = useMemo(() => fillAndSmoothMonths(faresRaw), [JSON.stringify(faresRaw)]);
 
-  // ----- Build chart rows -----
+  const fares = useMemo(() => fillAndSmoothMonths(faresRaw), [faresRaw]);
+
   const months = useMemo(() => {
     const s = new Set<string>();
     for (const f of fares) for (const m of f.monthBreakdown || []) s.add(m.month);
     const arr = Array.from(s).sort();
     if (arr.length) return arr;
-    // fallback 3-month window if truly empty
     const d = new Date();
     const a = new Date(d.getFullYear(), d.getMonth(), 1);
     const b = new Date(d.getFullYear(), d.getMonth() + 1, 1);
     const c = new Date(d.getFullYear(), d.getMonth() + 2, 1);
     return [a, b, c].map((x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}`);
-  }, [JSON.stringify(fares)]);
+  }, [fares]);
 
   const series = useMemo(() => {
     return months.map((m) => {
@@ -99,9 +94,9 @@ export default function DestDetailClient({ dest }: { dest: any }) {
       }
       return row;
     });
-  }, [months, JSON.stringify(fares)]);
+  }, [months, fares]);
 
-  // ----- Map pins -----
+  // Map pins
   const analysis = dest?.analysis ?? {};
   const rawMarkers: Marker[] = Array.isArray(analysis.map_markers) ? analysis.map_markers : [];
   let pins =
@@ -121,20 +116,28 @@ export default function DestDetailClient({ dest }: { dest: any }) {
   }
   const center: [number, number] | undefined = hasCenter ? [mc.lat, mc.lon] : pins[0]?.position;
 
-  // ----- Simple image terms (city + 1 word or POI) -----
+  // Simple image terms (city + 1 word/POI)
   const city = String(dest?.name || "").trim();
   const markerNames: string[] = (Array.isArray(rawMarkers) ? rawMarkers : [])
     .map((m) => (typeof m?.name === "string" ? m.name : ""))
     .filter(Boolean);
 
-  // short and simple searches
   const basics = ["skyline", "downtown", "museum", "park", "nightlife", "beach", "market"];
-  const leftList = [city + " " + (markerNames[0] || basics[0]), city + " " + (markerNames[1] || basics[1]), city + " " + (markerNames[2] || basics[2])];
-  const rightList = [city + " " + (basics[3]), city + " " + (basics[4]), city + " " + (basics[5]), city + " " + (basics[6])];
+  const leftList = [
+    city + " " + (markerNames[0] || basics[0]),
+    city + " " + (markerNames[1] || basics[1]),
+    city + " " + (markerNames[2] || basics[2]),
+  ];
+  const rightList = [
+    city + " " + basics[3],
+    city + " " + basics[4],
+    city + " " + basics[5],
+    city + " " + basics[6],
+  ];
 
   return (
     <>
-      {/* MAIN CONTENT (center column) */}
+      {/* Center column */}
       <div className="md:col-start-2 md:row-start-1 md:px-0 space-y-4">
         <SectionCard>
           <h1 className="text-2xl font-semibold">{dest.name}</h1>
@@ -200,14 +203,8 @@ export default function DestDetailClient({ dest }: { dest: any }) {
         </SectionCard>
       </div>
 
-      {/* BIGGER SIDE COLLAGE — placed AFTER content so it appears “around” it, and images are preloaded */}
-      <LiveCollage
-        className="mt-6"
-        leftList={leftList}
-        rightList={rightList}
-        leftCount={16}
-        rightCount={16}
-      />
+      {/* Larger side collage at the bottom (preloaded in pane) */}
+      <LiveCollage className="mt-6" leftList={leftList} rightList={rightList} leftCount={16} rightCount={16} />
     </>
   );
 }

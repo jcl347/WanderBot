@@ -2,12 +2,12 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
-import Image from "next/image";
+import NextImage from "next/image"; // alias to avoid shadowing window.Image
 
 type Img = { url: string; title?: string; source?: string; license?: string };
 
 type Props = {
-  // EITHER `query` OR `terms`; if `query` given we split by comma to get simple terms.
+  // EITHER `query` OR `terms`; if `query` given we split by comma into simple terms.
   query?: string;
   terms?: string[];
   count?: number;
@@ -21,7 +21,6 @@ function toTerms(query?: string, terms?: string[]) {
   }
   const q = (query || "").trim();
   if (!q) return [];
-  // split “Miami South Beach, Miami Wynwood” -> ["Miami South Beach", "Miami Wynwood"]
   return q
     .split(",")
     .map((x) => x.trim())
@@ -38,11 +37,8 @@ export default function LivePhotoPane({
   const [images, setImages] = useState<Img[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  const simpleTerms = useMemo(() => {
-    const t = toTerms(query, terms);
-    // hard-cap to keep each term simple
-    return t.slice(0, 8);
-  }, [query, terms]);
+  const simpleTerms = useMemo(() => toTerms(query, terms).slice(0, 8), [query, terms]);
+  const termsKey = useMemo(() => simpleTerms.join("|"), [simpleTerms]);
 
   useEffect(() => {
     let cancelled = false;
@@ -61,20 +57,25 @@ export default function LivePhotoPane({
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ terms: simpleTerms, count }),
-          // ensure we don’t cache empty/error responses
           cache: "no-store",
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = (await res.json()) as { images: Img[] };
-        const imgs = Array.isArray(json?.images) ? json.images : [];
+        const imgs = Array.isArray(json?.images) ? json.images.slice(0, count) : [];
 
-        // Preload to avoid popping
-        imgs.slice(0, count).forEach((im) => {
-          const i = new Image();
-          i.src = im.url;
-        });
+        // Preload to avoid popping (guard for SSR)
+        if (typeof window !== "undefined") {
+          imgs.forEach((im) => {
+            try {
+              const pre = new window.Image();
+              pre.src = im.url;
+            } catch {
+              /* noop */
+            }
+          });
+        }
 
-        if (!cancelled) setImages(imgs.slice(0, count));
+        if (!cancelled) setImages(imgs);
       } catch (e: any) {
         if (!cancelled) {
           console.error("[LivePhotoPane] error", e?.message || e);
@@ -88,7 +89,8 @@ export default function LivePhotoPane({
     return () => {
       cancelled = true;
     };
-  }, [count, simpleTerms.join("|")]);
+    // keep deps simple; eslint wants actual vars, not complex expressions
+  }, [count, termsKey]);
 
   const side =
     orientation === "left"
@@ -110,21 +112,18 @@ export default function LivePhotoPane({
       {images && images.length > 0 && (
         <div
           className={`grid grid-cols-3 gap-2 md:gap-3 ${side}`}
-          style={{
-            // big, airy rails
-            gridAutoRows: "90px",
-          }}
+          style={{ gridAutoRows: "90px" }}
         >
           {images.map((im, i) => (
             <div
               key={`${im.url}-${i}`}
               className={`relative rounded-xl overflow-hidden shadow-sm ${i % 7 === 0 ? "row-span-2" : ""}`}
             >
-              <Image
+              <NextImage
                 src={im.url}
                 alt={im.title || "Photo"}
                 fill
-                sizes="(max-width: 768px) 33vw, 260px"
+                sizes="(max-width: 768px) 33vw, 360px"
                 style={{ objectFit: "cover" }}
                 priority={i < 4}
               />
