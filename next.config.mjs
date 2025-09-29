@@ -1,24 +1,37 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  experimental: {
-    optimizeCss: true,
-  },
+  // Keep the config minimal and compatible with Next 15
+  reactStrictMode: true,
+
+  // Images we fetch from Wikimedia/Openverse
   images: {
-    // Allow Wikimedia thumbnails/full-size
     remotePatterns: [
       { protocol: "https", hostname: "upload.wikimedia.org" },
       { protocol: "https", hostname: "commons.wikimedia.org" },
-      // (Occasionally thumb proxies live on *.wikimedia.org)
-      { protocol: "https", hostname: "*.wikimedia.org" },
+      { protocol: "https", hostname: "images.unsplash.com" },
+      { protocol: "https", hostname: "api.openverse.engineering" },
+      { protocol: "https", hostname: "static.openverse.engineering" },
     ],
   },
+
+  // DO NOT enable optimizeCss unless you install 'critters'
+  experimental: {
+    optimizeCss: false,
+  },
+
+  // Silence outdated devIndicators options
   devIndicators: {
     position: "bottom-left",
   },
-  transpilePackages: [],
-  // “critters” module error during 404 prerender often happens when
-  // a custom _document tries to inline CSS. Ensure no custom _document uses it,
-  // otherwise let Next handle CSS inlining.
+
+  headers: async () => [
+    {
+      source: "/api/images",
+      headers: [
+        { key: "Cache-Control", value: "public, max-age=60, s-maxage=600, stale-while-revalidate=86400" },
+      ],
+    },
+  ],
 };
 
 export default nextConfig;
