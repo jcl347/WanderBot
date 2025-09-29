@@ -1,3 +1,4 @@
+// components/LivePhotoPane.tsx
 "use client";
 
 import * as React from "react";
@@ -6,148 +7,30 @@ import NextImage from "next/image";
 type Img = { url: string; title?: string; source?: string; license?: string };
 
 type Props = {
-  query?: string;
-  terms?: string[];
-  count?: number;
-  orientation?: "left" | "right";
+  terms: string[];    // required – short "<city> <keyword>" phrases
+  count?: number;     // total images target
+  side?: "left" | "right" | "bottom";
   className?: string;
 };
 
-/* -------------------------- term helpers (unchanged) ------------------------- */
-
-function firstToken(s: string): string {
-  const parts = String(s || "").split(/[,(|-]/);
-  return (parts[0] || s || "").trim();
-}
-
-function buildSimpleTerms(query?: string, terms?: string[], want = 10): string[] {
-  const city = firstToken(String(query || "").trim());
-  const fromProps = (terms || []).filter(Boolean);
-
-  if (!city && !fromProps.length) return [];
-
-  if (fromProps.length) {
-    return Array.from(
-      new Set(
-        fromProps
-          .map((t) => String(t).trim())
-          .filter(Boolean)
-          .map((t) => {
-            const one = t.replace(/\s+/g, " ").trim();
-            if (city && one.toLowerCase().startsWith(city.toLowerCase() + " ")) return one;
-            return city ? `${city} ${one}` : one;
-          })
-      )
-    ).slice(0, want);
-  }
-
-  const defaults = [
-    "skyline",
-    "downtown",
-    "beach",
-    "harbor",
-    "park",
-    "museum",
-    "nightlife",
-    "market",
-    "street",
-    "festival",
-    "landmarks",
-  ];
-
-  const out = defaults.map((k) => (query ? `${city} ${k}` : k));
-  return Array.from(new Set(out)).slice(0, want);
-}
-
-/* ----------------------------- preload + cache ------------------------------ */
-/** In-memory client cache so multiple panes or re-renders don't re-fetch. */
-type CacheEntry = {
-  urls: Img[];
-  inflight?: Promise<Img[]>;
-  ts: number;
-};
-const _imageCache = new Map<string, CacheEntry>();
-
-function keyFor(terms: string[], count: number) {
-  const t = [...new Set(terms.map((s) => s.trim().toLowerCase()))].sort();
-  return JSON.stringify({ t, c: count });
-}
-
-async function fetchImagesViaAPI(terms: string[], count: number): Promise<Img[]> {
-  // Contract: { terms: string[], count }
-  const body = { terms, count: Math.max(8, Math.min(24, count * 2)) };
-  const res = await fetch("/api/images", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error(`images api ${res.status}`);
-  const json = await res.json();
-
-  // Accept either { images: Img[] } or { urls: string[] } for extra robustness.
-  const imgs: Img[] = Array.isArray(json?.images)
-    ? (json.images as Img[]).filter((x) => typeof x?.url === "string")
-    : Array.isArray(json?.urls)
-    ? (json.urls as string[]).map((u: string) => ({ url: u }))
-    : [];
-
-  return imgs;
-}
-
-function preloadImages(urls: Img[], take: number) {
-  if (typeof window === "undefined") return;
-  urls.slice(0, take).forEach((im) => {
-    const i = new (window as any).Image() as HTMLImageElement;
-    i.decoding = "async";
-    i.loading = "eager";
-    i.src = im.url;
-  });
-}
-
-/** Fetch + preload with caching. Safe to call multiple times (de-duped). */
-async function getOrPreload(terms: string[], count: number): Promise<Img[]> {
-  const k = keyFor(terms, count);
-  const cached = _imageCache.get(k);
-  if (cached?.urls?.length) return cached.urls;
-  if (cached?.inflight) return cached.inflight;
-
-  const inflight = (async () => {
-    const imgs = await fetchImagesViaAPI(terms, count);
-    preloadImages(imgs, count);
-    const trimmed = imgs.slice(0, count);
-    _imageCache.set(k, { urls: trimmed, ts: Date.now() });
-    return trimmed;
-  })();
-
-  _imageCache.set(k, { urls: [], inflight, ts: Date.now() });
-  return inflight;
-}
-
-/* ---------------------------------- UI ------------------------------------- */
-
 export default function LivePhotoPane({
-  query,
   terms,
-  count = 10,
-  orientation = "left",
+  count = 12,
+  side = "left",
   className = "",
 }: Props) {
-  const simpleTerms = React.useMemo(() => buildSimpleTerms(query, terms, count * 2), [query, terms, count]);
-
   const [images, setImages] = React.useState<Img[]>([]);
   const [loading, setLoading] = React.useState<boolean>(false);
   const [errorText, setErrorText] = React.useState<string | null>(null);
 
-  const termsKey = React.useMemo(() => simpleTerms.join("|"), [simpleTerms]);
+  const termsKey = React.useMemo(() => terms.join("|"), [terms]);
 
   React.useEffect(() => {
     let cancelled = false;
 
     async function run() {
-      if (!simpleTerms.length) {
+      if (!terms.length) {
         setImages([]);
-        setErrorText(null);
         return;
       }
 
@@ -155,10 +38,34 @@ export default function LivePhotoPane({
         setLoading(true);
         setErrorText(null);
 
-        const imgs = await getOrPreload(simpleTerms, count);
+        const body = { terms, count: Math.max(8, Math.min(24, count * 2)) };
+        const res = await fetch("/api/images", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+          cache: "no-store",
+        });
+
+        if (!res.ok) throw new Error(`images api ${res.status}`);
+        const json = await res.json();
+
+        const imgs: Img[] = Array.isArray(json?.images)
+          ? (json.images as Img[]).filter((x) => typeof x?.url === "string")
+          : [];
 
         if (cancelled) return;
-        setImages(imgs);
+
+        // Preload aggressively
+        if (typeof window !== "undefined") {
+          imgs.slice(0, count).forEach((im) => {
+            const i = new (window as any).Image() as HTMLImageElement;
+            i.decoding = "async";
+            i.loading = "eager";
+            i.src = im.url;
+          });
+        }
+
+        setImages(imgs.slice(0, count));
       } catch (e: any) {
         if (!cancelled) {
           setErrorText(e?.message || "Failed to load images");
@@ -173,24 +80,28 @@ export default function LivePhotoPane({
     return () => {
       cancelled = true;
     };
-  }, [count, termsKey, simpleTerms]);
+  }, [count, termsKey]);
 
   return (
     <div
       className={[
-        "rounded-xl border bg-white/60 p-2 md:p-3",
-        orientation === "left" ? "mr-2" : "ml-2",
+        "rounded-xl border bg-white/70 p-2 md:p-3 shadow-sm",
+        side === "left" ? "mr-2" : side === "right" ? "ml-2" : "mt-3",
         className,
       ].join(" ")}
     >
       {errorText ? (
-        <div className="text-xs text-neutral-500">No images found for: {simpleTerms.join(", ")}</div>
+        <div className="text-xs text-neutral-500">
+          No images found for: {terms.join(", ")}
+        </div>
       ) : loading && images.length === 0 ? (
-        <div className="text-xs text-neutral-500">Loading images for {simpleTerms.join(" · ")}…</div>
+        <div className="text-xs text-neutral-500">
+          Loading images for {terms.join(" · ")}…
+        </div>
       ) : (
         <div
           className="
-            grid gap-2
+            grid gap-3
             grid-cols-2
             sm:grid-cols-3
             lg:grid-cols-2
@@ -199,15 +110,16 @@ export default function LivePhotoPane({
           "
         >
           {images.map((img, i) => {
-            const tall = i % 7 === 0;
+            const tall = i % 6 === 0;
             const wide = i % 5 === 0 && !tall;
-            const baseCls = "relative rounded-xl overflow-hidden bg-neutral-100";
+            const baseCls =
+              "relative rounded-xl overflow-hidden bg-neutral-100 shadow";
 
             const boxCls = tall
-              ? `${baseCls} row-span-2 h-[340px]`
+              ? `${baseCls} row-span-2 h-[420px]`
               : wide
-              ? `${baseCls} col-span-2 h-[220px]`
-              : `${baseCls} h-[160px]`;
+              ? `${baseCls} col-span-2 h-[280px]`
+              : `${baseCls} h-[220px]`;
 
             return (
               <div key={`${img.url}-${i}`} className={boxCls}>

@@ -1,3 +1,4 @@
+// app/results/[id]/page.tsx
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import BackgroundMap from "@/components/BackgroundMap";
@@ -15,7 +16,7 @@ type DestRow = {
   slug: string;
   name: string;
   narrative: string;
-  analysis?: any | null; // jsonb from DB (may contain map_center, photos, etc.)
+  analysis?: any | null;
   months?: Array<{ month: string; note: string }> | null;
   per_traveler_fares?: Array<{
     travelerName: string;
@@ -94,12 +95,11 @@ export default async function ResultsPage({ params }: PageProps) {
 
   const summary = (plan.summary ?? { destinations: [] }) as SummaryShape;
 
-  // Build markers **only** from model-provided coordinates
+  // Build markers only from model-provided coordinates
   const markers = dests
     .map((d) => {
       const mc = d?.analysis?.map_center;
       if (!mc || typeof mc.lat !== "number" || typeof mc.lon !== "number") {
-        // server log -> Vercel functions
         console.warn("[results] missing map_center for slug:", d.slug);
         return null;
       }
@@ -110,15 +110,13 @@ export default async function ResultsPage({ params }: PageProps) {
     })
     .filter(Boolean) as { position: [number, number]; label: string }[];
 
-  // pick a stable center if at least one pin exists
   const center: [number, number] = markers.length ? markers[0]!.position : [30, -30];
 
-  // If you want to inspect how many pins you got in production logs:
   console.log("[results] pins from model map_center:", markers.length, "of", dests.length);
 
   return (
     <BackgroundMap>
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between mb-6">
         <RobotBadge />
         <Link href="/" className="text-sm text-sky-700 underline">
           ← Start a new plan
@@ -127,7 +125,7 @@ export default async function ResultsPage({ params }: PageProps) {
 
       <SectionCard>
         <h1 className="text-2xl font-semibold">Your trip plan</h1>
-        <p className="mt-2 text-neutral-700 whitespace-pre-line">
+        <p className="mt-2 text-neutral-700 whitespace-pre-line leading-relaxed">
           {plan.final_recommendation}
         </p>
       </SectionCard>
@@ -139,7 +137,7 @@ export default async function ResultsPage({ params }: PageProps) {
 
       <SectionCard>
         <h2 className="text-lg font-semibold mb-3">Trip map</h2>
-        <div className="h-72 w-full">
+        <div className="h-80 w-full">
           <MapLeaflet center={center} zoom={2} markers={markers} />
         </div>
         <p className="mt-2 text-xs text-neutral-500">
@@ -149,13 +147,13 @@ export default async function ResultsPage({ params }: PageProps) {
 
       <SectionCard>
         <h2 className="text-lg font-semibold mb-3">Destinations</h2>
-        <div className="grid md:grid-cols-2 gap-3">
+        <div className="grid sm:grid-cols-1 lg:grid-cols-2 gap-8">
           {dests.map((d, i) => {
             const c = CARD_COLORS[i % CARD_COLORS.length];
             return (
               <div
                 key={d.slug}
-                className={`rounded-2xl border p-0 bg-gradient-to-br ${c.from} ${c.to} shadow-sm hover:shadow-md transition-shadow`}
+                className={`rounded-2xl border p-0 bg-gradient-to-br ${c.from} ${c.to} shadow-md hover:shadow-lg transition-shadow`}
               >
                 <DestinationCard
                   dest={{

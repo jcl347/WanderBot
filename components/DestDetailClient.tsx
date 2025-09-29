@@ -4,7 +4,7 @@ import * as React from "react";
 import SectionCard from "./SectionCard";
 import MonthLine from "./MonthLine";
 import MapLeaflet from "./MapLeaflet";
-import LiveCollage from "./LiveCollage"; // <-- new wrapper for left | center | right
+import LivePhotoPane from "./LivePhotoPane";
 
 type Fare = {
   travelerName: string;
@@ -42,7 +42,6 @@ function smoothFareSeries(series: { month: string; avgUSD: number }[]) {
       sorted.length % 2
         ? sorted[(sorted.length / 2) | 0]
         : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
-
     if (Math.abs(x.avgUSD - med) / Math.max(1, med) > 0.7) {
       return { month: x.month, avgUSD: Math.round(med * 0.85 + x.avgUSD * 0.15) };
     }
@@ -115,7 +114,6 @@ function buildCityTerms(dest: any, limit = 12) {
 }
 
 export default function DestDetailClient({ dest }: { dest: any }) {
-  /* ------------------------------ fares & series ----------------------------- */
   const fares = React.useMemo(() => {
     const raw: Fare[] = Array.isArray(dest?.per_traveler_fares) ? dest.per_traveler_fares : [];
     return fillAndSmoothMonths(raw);
@@ -145,7 +143,6 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     });
   }, [months, fares]);
 
-  /* ---------------------------------- map ----------------------------------- */
   const analysis = dest?.analysis ?? {};
   const rawMarkers: Marker[] = Array.isArray(analysis.map_markers) ? analysis.map_markers : [];
 
@@ -169,26 +166,19 @@ export default function DestDetailClient({ dest }: { dest: any }) {
   }
   const center: [number, number] | undefined = hasCenter ? [mc.lat, mc.lon] : pins[0]?.position;
 
-  /* ------------------------------ image terms ------------------------------- */
-  const simpleTerms = React.useMemo(() => buildCityTerms(dest, 12), [dest]);
+  const simpleTerms = React.useMemo(() => buildCityTerms(dest, 14), [dest]);
   const mid = Math.max(1, Math.ceil(simpleTerms.length / 2));
   const leftTerms = simpleTerms.slice(0, mid);
   const rightTerms = simpleTerms.slice(mid);
 
-  /* ---------------------------- three-column UI ----------------------------- */
   return (
-    <LiveCollage
-      leftTerms={leftTerms}
-      rightTerms={rightTerms}
-      railWidth={320}
-      railClassName="max-h-[80vh] overflow-auto"
-      className="md:container md:mx-auto"
-    >
-      {/* Center analytics column (mobile: shown above bottom collage) */}
-      <div className="md:px-0 space-y-4">
+    <>
+      <div className="md:col-start-2 md:row-start-1 md:px-0 space-y-6">
         <SectionCard>
-          <h1 className="text-2xl font-semibold">{dest.name}</h1>
-          <p className="text-neutral-700 whitespace-pre-line mt-2">{dest.narrative}</p>
+          <h1 className="text-3xl font-semibold">{dest.name}</h1>
+          <p className="text-neutral-700 whitespace-pre-line mt-3 text-lg leading-relaxed">
+            {dest.narrative}
+          </p>
         </SectionCard>
 
         <SectionCard>
@@ -217,7 +207,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
         <SectionCard>
           <h2 className="text-lg font-semibold mb-3">Map</h2>
           {center ? (
-            <div className="h-72">
+            <div className="h-96">
               <MapLeaflet center={center} zoom={pins.length > 1 ? 11 : 8} markers={pins} />
             </div>
           ) : (
@@ -249,6 +239,15 @@ export default function DestDetailClient({ dest }: { dest: any }) {
           </div>
         </SectionCard>
       </div>
-    </LiveCollage>
+
+      {/* Wide collage rails */}
+      <div className="mt-8 grid grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)_360px] gap-6">
+        {/* Removed unsupported `orientation` prop */}
+        <LivePhotoPane terms={leftTerms} count={14} className="w-full" />
+        <div /> {/* spacer for middle content */}
+        {/* Removed unsupported `orientation` prop */}
+        <LivePhotoPane terms={rightTerms} count={14} className="w-full" />
+      </div>
+    </>
   );
 }

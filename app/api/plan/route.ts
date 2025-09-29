@@ -88,6 +88,9 @@ const DestSchema = z.object({
 
   image_queries: z.array(z.string()).optional(),
 
+  // NEW: a few concrete URLs fetched on the server so the UI can preload
+  preview_images: z.array(z.string().url()).optional(),
+
   photos: z.array(z.string().url()).optional(),
   photo_attribution: z.string().optional(),
 });
@@ -545,6 +548,34 @@ Return JSON like:
 `.trim();
 }
 
+// ---------------- image preload (server-side best-effort) ----------------
+async function preloadImages(queries: string[], count = 4): Promise<string[]> {
+  if (!Array.isArray(queries) || queries.length === 0) return [];
+  try {
+    const base = process.env.NEXT_PUBLIC_BASE_URL?.replace(/\/$/, "") || "";
+    const res = await fetch(`${base}/api/images`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        q: queries.slice(0, 8).join(", "),
+        terms: queries.slice(0, 8),
+        count: Math.max(3, Math.min(8, count)),
+      }),
+      cache: "no-store",
+    });
+    if (!res.ok) return [];
+    const json = await res.json();
+    const urls = Array.isArray(json?.images)
+      ? (json.images as any[])
+          .map((im) => (im && typeof im.url === "string" ? im.url : null))
+          .filter(Boolean)
+      : [];
+    return urls.slice(0, Math.max(3, Math.min(8, count)));
+  } catch {
+    return [];
+  }
+}
+
 // ---------------- route ----------------
 export async function POST(req: NextRequest) {
   const reqId = Math.random().toString(36).slice(2, 8);
@@ -633,92 +664,99 @@ export async function POST(req: NextRequest) {
     if (json.destinations.length > 5) json.destinations = json.destinations.slice(0, 5);
     while (json.destinations.length < 5) json.destinations.push({});
 
-    json.destinations = json.destinations.map((d: any, i: number) => {
-      const base = d && typeof d === "object" ? d : {};
+    json.destinations = await Promise.all(
+      json.destinations.map(async (d: any, i: number) => {
+        const base = d && typeof d === "object" ? d : {};
 
-      const { name, slug } = ensureNameSlug(base, i);
+        const { name, slug } = ensureNameSlug(base, i);
 
-      // per-traveler fares
-      const fares = normalizePerTravelerFares(
-        base.per_traveler_fares,
-        bodyForModel.travelers
-      );
-      // guarantee full coverage & smooth spikes
-      enforceFareCoverageAndSmooth(
-        fares,
-        effectiveTimeframe.startMonth,
-        effectiveTimeframe.endMonth
-      );
+        // per-traveler fares
+        const fares = normalizePerTravelerFares(
+          base.per_traveler_fares,
+          bodyForModel.travelers
+        );
+        // guarantee full coverage & smooth spikes
+        enforceFareCoverageAndSmooth(
+          fares,
+          effectiveTimeframe.startMonth,
+          effectiveTimeframe.endMonth
+        );
 
-      // month notes
-      const monthsRaw = normalizeMonths(base.months, effectiveTimeframe.startMonth);
-      const months = expandMonthsToRange(
-        monthsRaw,
-        effectiveTimeframe.startMonth,
-        effectiveTimeframe.endMonth
-      );
+        // month notes
+        const monthsRaw = normalizeMonths(base.months, effectiveTimeframe.startMonth);
+        const months = expandMonthsToRange(
+          monthsRaw,
+          effectiveTimeframe.startMonth,
+          effectiveTimeframe.endMonth
+        );
 
-      // map
-      const mc =
-        base?.map_center &&
-        Number.isFinite(Number(base.map_center.lat)) &&
-        Number.isFinite(Number(base.map_center.lon))
-          ? { lat: Number(base.map_center.lat), lon: Number(base.map_center.lon) }
+        // map
+        const mc =
+          base?.map_center &&
+          Number.isFinite(Number(base.map_center.lat)) &&
+          Number.isFinite(Number(base.map_center.lon))
+            ? { lat: Number(base.map_center.lat), lon: Number(base.map_center.lon) }
+            : undefined;
+        const cleanedMarkers = normalizeMarkers(base.map_markers);
+
+        // imagery
+        let imageQueries: string[] | undefined = Array.isArray(base.image_queries)
+          ? base.image_queries
+              .map((s: unknown) => (typeof s === "string" ? s.trim() : ""))
+              .filter(Boolean)
+              .slice(0, 12)
           : undefined;
-      const cleanedMarkers = normalizeMarkers(base.map_markers);
 
-      // imagery
-      let imageQueries: string[] | undefined = Array.isArray(base.image_queries)
-        ? base.image_queries
-            .map((s: unknown) => (typeof s === "string" ? s.trim() : ""))
-            .filter(Boolean)
-            .slice(0, 12)
-        : undefined;
+        if (!imageQueries || imageQueries.length < 6) {
+          const markerNames = (cleanedMarkers || []).map((m) => m.name);
+          imageQueries = fallbackImageQueries(name, markerNames);
+        }
 
-      if (!imageQueries || imageQueries.length < 6) {
-        const markerNames = (cleanedMarkers || []).map((m) => m.name);
-        imageQueries = fallbackImageQueries(name, markerNames);
-      }
+        // try to grab a small set of concrete image URLs server-side
+        const previewImages = await preloadImages(imageQueries || [], 4);
 
-      const analysis = {
-        suggested_month: base.suggested_month,
-        seasonal_warnings: base.seasonal_warnings,
-        satisfies: base.satisfies,
-        analytics: base.analytics,
-        map_center: mc,
-        map_markers: cleanedMarkers,
-        image_queries: imageQueries,
-        photos: Array.isArray(base.photos) ? base.photos.slice(0, 4) : undefined,
-        photo_attribution:
-          typeof base.photo_attribution === "string" ? base.photo_attribution : undefined,
-      };
+        const analysis = {
+          suggested_month: base.suggested_month,
+          seasonal_warnings: base.seasonal_warnings,
+          satisfies: base.satisfies,
+          analytics: base.analytics,
+          map_center: mc,
+          map_markers: cleanedMarkers,
+          image_queries: imageQueries,
+          preview_images: previewImages,
+          photos: Array.isArray(base.photos) ? base.photos.slice(0, 4) : undefined,
+          photo_attribution:
+            typeof base.photo_attribution === "string" ? base.photo_attribution : undefined,
+        };
 
-      const narrative =
-        typeof base.narrative === "string" && base.narrative.trim()
-          ? base.narrative.trim()
-          : `Why ${name} could fit your group: beaches, food, and an easy flight mix.`;
+        const narrative =
+          typeof base.narrative === "string" && base.narrative.trim()
+            ? base.narrative.trim()
+            : `Why ${name} could fit your group: beaches, food, and an easy flight mix.`;
 
-      return {
-        name,
-        slug,
-        narrative,
-        months,
-        per_traveler_fares: fares,
+        return {
+          name,
+          slug,
+          narrative,
+          months,
+          per_traveler_fares: fares,
 
-        suggested_month: analysis.suggested_month,
-        seasonal_warnings: analysis.seasonal_warnings,
-        satisfies: analysis.satisfies,
-        analytics: analysis.analytics,
-        map_center: analysis.map_center,
-        map_markers: analysis.map_markers,
+          suggested_month: analysis.suggested_month,
+          seasonal_warnings: analysis.seasonal_warnings,
+          satisfies: analysis.satisfies,
+          analytics: analysis.analytics,
+          map_center: analysis.map_center,
+          map_markers: analysis.map_markers,
 
-        image_queries: analysis.image_queries,
-        photos: analysis.photos,
-        photo_attribution: analysis.photo_attribution,
+          image_queries: analysis.image_queries,
+          preview_images: analysis.preview_images,
+          photos: analysis.photos,
+          photo_attribution: analysis.photo_attribution,
 
-        analysis, // store whole enriched object
-      };
-    });
+          analysis, // store whole enriched object
+        };
+      })
+    );
 
     if (!json.final_recommendation || typeof json.final_recommendation !== "string") {
       json.final_recommendation = fallbackFinalRecommendation(json.destinations);
@@ -847,7 +885,7 @@ export async function POST(req: NextRequest) {
           toJsonb(d.months ?? []),
           toJsonb(d.per_traveler_fares),
           toJsonb(totals),
-          toJsonb(d), // includes image_queries, photos, coords, etc.
+          toJsonb(d), // includes image_queries, preview_images, photos, coords, etc.
         ]
       );
     }
