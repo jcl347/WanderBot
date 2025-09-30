@@ -86,10 +86,9 @@ const DestSchema = z.object({
     )
     .optional(),
 
+  // imagery (model + server enrichment)
   image_queries: z.array(z.string()).optional(),
-  vacation_image_queries: z.array(z.string()).optional(), // NEW: stronger “vacation” vibes
-
-  // server-side preloaded URLs so the UI can show images faster
+  image_queries_short: z.array(z.string()).optional(), // NEW: model should return strictly 2-word, landmark/vacation terms
   preview_images: z.array(z.string().url()).optional(),
 
   photos: z.array(z.string().url()).optional(),
@@ -425,6 +424,7 @@ function enforceFareCoverageAndSmooth(
 }
 
 // --- Time / month helpers ---
+// "YYYY-MM" for current month in UTC (deterministic on Vercel)
 function nowYM(): string {
   const d = new Date();
   const y = d.getUTCFullYear();
@@ -432,8 +432,9 @@ function nowYM(): string {
   return `${y}-${m}`;
 }
 function cmpYM(a: string, b: string) {
-  return a.localeCompare(b);
+  return a.localeCompare(b); // works for YYYY-MM
 }
+/** Ensure the start/end months are not in the past, and end >= start. */
 function normalizeTimeframe(tf: { startMonth: string; endMonth: string }) {
   const current = nowYM();
   let start = tf.startMonth?.slice(0, 7) || current;
@@ -443,6 +444,42 @@ function normalizeTimeframe(tf: { startMonth: string; endMonth: string }) {
   if (cmpYM(end, start) < 0) end = start;
 
   return { startMonth: start, endMonth: end };
+}
+
+// ---------------- vacation term helpers (strictly 1–2 tokens) ----------------
+const CITY_PREFIXES = new Set([
+  "new", "los", "las", "san", "santa", "fort", "rio", "são", "sao", "kuala",
+  "ho", "tel", "buenos", "abu", "cape", "phnom", "st.", "saint"
+]);
+const LANDMARK_WORDS = [
+  "beach","harbor","skyline","castle","palace","cathedral","basilica","temple","mosque",
+  "pagoda","bridge","tower","market","plaza","square","museum","park","garden","lighthouse",
+  "promenade","waterfront","waterfall","island","fortress","ruins","sunset"
+];
+
+function tok(s: string) {
+  return (s || "").replace(/\s+/g, " ").trim().split(" ").filter(Boolean);
+}
+function cityRootFromTerm(term: string): string {
+  const t = tok(term);
+  if (t.length === 0) return "";
+  const first = t[0].toLowerCase();
+  if (CITY_PREFIXES.has(first) && t.length >= 2) return `${t[0]} ${t[1]}`;
+  return t[0];
+}
+function toTwoWordLandmarks(terms: string[], limit = 24): string[] {
+  const roots = Array.from(new Set(terms.map(cityRootFromTerm).filter(Boolean)));
+  const out: string[] = [];
+  for (const root of roots) {
+    const rTok = tok(root);
+    if (rTok.length >= 2) {
+      out.push(root); // already 2 tokens
+      continue;
+    }
+    for (const w of LANDMARK_WORDS) out.push(`${root} ${w}`);
+    out.push(root); // include city alone
+  }
+  return Array.from(new Set(out)).slice(0, limit);
 }
 
 // ---------------- prompt ----------------
@@ -467,7 +504,7 @@ function buildPrompt(input: z.infer<typeof Body>) {
     )
     .join("\n");
 
-  // Show numeric coords + short image queries explicitly (now with "vacation_image_queries")
+  // Show numeric coords + short image queries explicitly
   const example = `
 EXAMPLE DESTINATION (shape only):
 {
@@ -497,14 +534,13 @@ EXAMPLE DESTINATION (shape only):
   "image_queries": [
     "Los Angeles skyline",
     "Los Angeles street art",
-    "Grand Central Market food"
+    "Los Angeles live music",
+    "Grand Central Market food",
+    "Hollywood Bowl concert",
+    "Santa Monica Pier"
   ],
-  "vacation_image_queries": [
-    "Los Angeles beach sunset",
-    "Los Angeles rooftop pool",
-    "Santa Monica boardwalk",
-    "Venice Canals sunrise",
-    "Hollywood Hills viewpoint at golden hour"
+  "image_queries_short": [
+    "Los Angeles skyline", "Los Angeles beach", "Los Angeles pier"
   ]
 }
 `.trim();
@@ -532,18 +568,20 @@ Airfare estimation rule-of-thumb (no web browsing; derive from common industry p
 - Keep **short-haul** typical $120–$350; **medium** $180–$650; **long-haul** $400–$1200; **very long-haul** $900–$2000+. Clamp final numbers to **$60–$5000**.
 - Set each traveler’s overall "avgUSD" to the **mean of their monthly values** (not a separate guess).
 
-Hard requirements:
-- For each destination:
+Hard requirements (for each destination):
   • "narrative": explain WHY it fits; **embed a tiny 2–3 bullet micro-itinerary in prose**.
   • "per_traveler_fares": for each traveler include {"travelerName","from","avgUSD","monthBreakdown":[every month ${monthWindow}]}.
     - "from" is the city name (e.g., "Austin" not "AUS").
   • "months": cover every month in the window; each "note" names a major event/festival or a strong seasonal hook.
   • Map: "map_center" { "lat": number, "lon": number } and **6–10 "map_markers"** with numeric "position": [lat, lon] and short "blurb".
-  • Imagery:
-      - **8–12 "image_queries"** in the format "<city> <one keyword/POI>" (e.g., "Miami South Beach", "Miami nightlife", "Miami Wynwood Walls").
-      - **10–18 "vacation_image_queries"** that are photogenic, traveler-pleasing, and seasonal where relevant.
-        Make them **short, vacation-oriented** (e.g., "<city> beach club", "<city> rooftop pool sunset", "<city> old town golden hour", "<city> market street food", "<city> harbor promenade", "<city> waterfall hike").
-        Reflect ${suggestions || "the group’s interests"} and the month window ${monthWindow}.
+  • Imagery (two arrays):
+      - "image_queries": **8–12** natural phrases "<city> <one keyword/POI>" for variety (e.g., "Miami South Beach", "Miami nightlife").
+      - "image_queries_short": **10–18** **strictly two-word, landmark/vacation** terms:
+        Rules:
+          1) If the city name has two tokens (e.g., "New York"), use **just the city** as a two-word term.
+          2) Otherwise pair "<City> <OneWord>" where the second token is drawn from this single-token set:
+             { beach, harbor, skyline, castle, palace, cathedral, basilica, temple, mosque, pagoda, bridge, tower, market, plaza, square, museum, park, garden, lighthouse, promenade, waterfront, waterfall, island, fortress, ruins, sunset }.
+          3) Absolutely no terms longer than two tokens. Avoid punctuation.
 - If any traveler "dislikes travel", bias location near ${anchor}. Otherwise balance cost vs. interests.
 
 Return JSON like:
@@ -555,40 +593,74 @@ Return JSON like:
 `.trim();
 }
 
-// ---------------- image preload (server-side best-effort) ----------------
-async function preloadImages(
-  origin: string,
-  queries: string[],
-  count = 4
-): Promise<string[]> {
-  if (!Array.isArray(queries) || queries.length === 0) return [];
+// ---------------- Wikimedia preload (server-side, no internal hop) ----------------
+type Img = { url: string; title?: string; source: "wikimedia" };
+
+async function fetchWikimedia(term: string, limit: number): Promise<Img[]> {
+  if (!term) return [];
+  const params = new URLSearchParams({
+    action: "query",
+    format: "json",
+    prop: "imageinfo",
+    generator: "search",
+    gsrnamespace: "6", // File namespace
+    gsrsearch: term,
+    gsrlimit: String(Math.min(50, Math.max(8, limit))),
+    iiprop: "url|mime|size",
+    iiurlwidth: "1280",
+    uselang: "en",
+    origin: "*",
+  });
+  const url = `https://commons.wikimedia.org/w/api.php?${params.toString()}`;
   try {
-    const url = new URL("/api/images", origin);
-    const res = await fetch(url.toString(), {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        q: queries.slice(0, 8).join(", "),
-        terms: queries.slice(0, 8),
-        count: Math.max(3, Math.min(8, count)),
-      }),
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      console.warn("[images] preload non-OK:", res.status);
-      return [];
+    const res = await fetch(url, { next: { revalidate: 600 } });
+    if (!res.ok) return [];
+    const data: any = await res.json();
+    const pages: Record<string, any> = data?.query?.pages || {};
+    const out: Img[] = [];
+    for (const p of Object.values(pages) as any[]) {
+      const ii = Array.isArray(p?.imageinfo) ? p.imageinfo[0] : null;
+      const link = typeof ii?.thumburl === "string" ? ii.thumburl : (typeof ii?.url === "string" ? ii.url : "");
+      if (!link) continue;
+      out.push({ url: link, title: typeof p?.title === "string" ? p.title : undefined, source: "wikimedia" });
     }
-    const json = await res.json();
-    const urls = Array.isArray(json?.images)
-      ? (json.images as any[])
-          .map((im) => (im && typeof im.url === "string" ? im.url : null))
-          .filter(Boolean)
-      : [];
-    return urls.slice(0, Math.max(3, Math.min(8, count)));
-  } catch (e: any) {
-    console.warn("[images] preload exception:", e?.message || e);
+    return out.slice(0, limit);
+  } catch {
     return [];
   }
+}
+
+function dedupeKeepFirst(images: Img[], limit: number): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const im of images) {
+    const key = im.url;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(im.url);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+async function preloadImagesWikimedia(queries: string[], count = 6): Promise<string[]> {
+  if (!Array.isArray(queries) || queries.length === 0) return [];
+  const twoWord = toTwoWordLandmarks(queries, 24); // guard: enforce <=2 tokens
+  const maxTerms = Math.min(twoWord.length, 14);
+  const perTerm = Math.max(8, Math.ceil((count * 2) / Math.max(1, maxTerms)));
+
+  const batches = twoWord.slice(0, maxTerms).map((t) => fetchWikimedia(t, perTerm));
+  const chunks = await Promise.all(batches);
+  const flat = chunks.flat();
+
+  // Fallback: try raw city roots if still low
+  let urls = dedupeKeepFirst(flat, Math.max(6, count));
+  if (urls.length < count) {
+    const roots = Array.from(new Set(queries.map(cityRootFromTerm).filter(Boolean))).slice(0, 8);
+    const rootChunks = await Promise.all(roots.map((r) => fetchWikimedia(r, perTerm)));
+    urls = dedupeKeepFirst([...flat, ...rootChunks.flat()], Math.max(6, count));
+  }
+  return urls;
 }
 
 // ---------------- route ----------------
@@ -679,8 +751,6 @@ export async function POST(req: NextRequest) {
     if (json.destinations.length > 5) json.destinations = json.destinations.slice(0, 5);
     while (json.destinations.length < 5) json.destinations.push({});
 
-    const origin = req.nextUrl.origin;
-
     json.destinations = await Promise.all(
       json.destinations.map(async (d: any, i: number) => {
         const base = d && typeof d === "object" ? d : {};
@@ -716,40 +786,47 @@ export async function POST(req: NextRequest) {
             : undefined;
         const cleanedMarkers = normalizeMarkers(base.map_markers);
 
-        // imagery: prefer vacation_image_queries, then image_queries, then fallback
-        let imageQueries: string[] | undefined = Array.isArray(base.vacation_image_queries)
-          ? base.vacation_image_queries
-          : Array.isArray(base.image_queries)
-          ? base.image_queries
-          : undefined;
-
-        imageQueries = Array.isArray(imageQueries)
-          ? imageQueries
+        // imagery — prefer model's two-word landmark terms, then long queries, then compute fallback
+        let imageQueriesShort: string[] | undefined = Array.isArray(base.image_queries_short)
+          ? base.image_queries_short
               .map((s: unknown) => (typeof s === "string" ? s.trim() : ""))
               .filter(Boolean)
-              .slice(0, 16)
+              .slice(0, 24)
           : undefined;
+
+        let imageQueries: string[] | undefined = Array.isArray(base.image_queries)
+          ? base.image_queries
+              .map((s: unknown) => (typeof s === "string" ? s.trim() : ""))
+              .filter(Boolean)
+              .slice(0, 12)
+          : undefined;
+
+        if (!imageQueriesShort || imageQueriesShort.length < 8) {
+          // derive strict two-word variants from whatever we have (long → 2-word)
+          const seed = (imageQueries && imageQueries.length ? imageQueries : fallbackImageQueries(name, (cleanedMarkers || []).map((m) => m.name)));
+          imageQueriesShort = toTwoWordLandmarks(seed, 24);
+        }
 
         if (!imageQueries || imageQueries.length < 6) {
           const markerNames = (cleanedMarkers || []).map((m) => m.name);
           imageQueries = fallbackImageQueries(name, markerNames);
         }
 
-        // try to grab a small set of concrete image URLs server-side
-        const previewImages = await preloadImages(origin, imageQueries || [], 4);
+        // prefetch a small set of concrete image URLs via Wikimedia Commons
+        const previewImages = await preloadImagesWikimedia(imageQueriesShort, 8);
 
         const analysis = {
           suggested_month: base.suggested_month,
-          seasonal_warnings: base.suggested_warnings ?? base.seasonal_warnings,
+          seasonal_warnings: base.seasonal_warnings,
           satisfies: base.satisfies,
           analytics: base.analytics,
           map_center: mc,
           map_markers: cleanedMarkers,
+
           image_queries: imageQueries,
-          vacation_image_queries: Array.isArray(base.vacation_image_queries)
-            ? base.vacation_image_queries
-            : undefined,
+          image_queries_short: imageQueriesShort,
           preview_images: previewImages,
+
           photos: Array.isArray(base.photos) ? base.photos.slice(0, 4) : undefined,
           photo_attribution:
             typeof base.photo_attribution === "string" ? base.photo_attribution : undefined,
@@ -775,12 +852,12 @@ export async function POST(req: NextRequest) {
           map_markers: analysis.map_markers,
 
           image_queries: analysis.image_queries,
-          vacation_image_queries: analysis.vacation_image_queries,
+          image_queries_short: analysis.image_queries_short,
           preview_images: analysis.preview_images,
           photos: analysis.photos,
           photo_attribution: analysis.photo_attribution,
 
-          analysis, // includes image query fields & preview_images
+          analysis, // store whole enriched object
         };
       })
     );
@@ -867,7 +944,9 @@ export async function POST(req: NextRequest) {
       `[plan ${reqId}] image_queries counts=`,
       parsed.destinations.map((d) => ({
         slug: d.slug,
-        n: (d.vacation_image_queries || d.image_queries || []).length || 0,
+        long: d.image_queries?.length || 0,
+        short: (d as any).image_queries_short?.length || 0,
+        previews: (d as any).preview_images?.length || 0,
       }))
     );
 
@@ -915,7 +994,7 @@ export async function POST(req: NextRequest) {
           toJsonb(d.months ?? []),
           toJsonb(d.per_traveler_fares),
           toJsonb(totals),
-          toJsonb(d), // includes image_queries, vacation_image_queries, preview_images, coords, etc.
+          toJsonb(d), // includes image_queries, image_queries_short, preview_images, photos, coords, etc.
         ]
       );
     }
