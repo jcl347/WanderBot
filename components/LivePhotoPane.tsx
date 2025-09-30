@@ -1,194 +1,153 @@
+// components/LivePhotoPane.tsx
 "use client";
 
 import * as React from "react";
 import Image from "next/image";
-import clsx from "clsx";
+
+type ImgItem = { url: string; alt: string };
 
 type Props = {
   terms: string[];
   count?: number;
-  /** Cosmetic/testing hint */
-  orientation?: "left" | "right";
   className?: string;
+  columns?: number;      // how many columns in the mosaic (desktop)
+  rowSize?: number;      // base row height used for auto-rows (px)
 };
-
-type ApiImage = {
-  src: string;
-  width?: number | null;
-  height?: number | null;
-  title?: string | null;
-  page?: string | null;
-  author?: string | null;
-  license?: string | null;
-};
-
-function useImageSearch(terms: string[], count: number) {
-  const [images, setImages] = React.useState<ApiImage[]>([]);
-  const [loading, setLoading] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-
-  // Stable dependency key
-  const depKey = React.useMemo(() => `${terms.join("\u0001")}|${count}`, [terms, count]);
-
-  React.useEffect(() => {
-    let cancelled = false;
-
-    const doFetch = async () => {
-      if (!terms?.length) {
-        setImages([]);
-        return;
-      }
-      setLoading(true);
-      setError(null);
-      try {
-        const qs = new URLSearchParams();
-        terms.forEach((t) => qs.append("terms", t));
-        qs.set("count", String(count));
-        const url = `/api/images?${qs.toString()}`;
-
-        const res = await fetch(url, { method: "GET", headers: { Accept: "application/json" } });
-        const data = await res.json();
-
-        if (cancelled) return;
-
-        if (!res.ok) {
-          console.error("[LivePhotoPane] /api/images error:", { status: res.status, data });
-          setError(`Image API error (${res.status})`);
-          setImages([]);
-          return;
-        }
-
-        const imgs: ApiImage[] = Array.isArray(data?.images) ? data.images : [];
-        console.log(
-          "[LivePhotoPane] fetched",
-          imgs.length,
-          "images for",
-          terms,
-          "reqId=",
-          data?.reqId
-        );
-
-        // Warm up the first few images
-        if (typeof window !== "undefined") {
-          const preload = imgs.slice(0, Math.min(6, imgs.length));
-          for (const im of preload) {
-            try {
-              const link = document.createElement("link");
-              link.rel = "preload";
-              link.as = "image";
-              link.href = im.src;
-              document.head.appendChild(link);
-
-              const htmlImg = new window.Image();
-              htmlImg.decoding = "async";
-              htmlImg.loading = "eager";
-              htmlImg.src = im.src;
-              const anyImg: any = htmlImg;
-              if (typeof anyImg.decode === "function") {
-                anyImg.decode().catch(() => {});
-              }
-            } catch {}
-          }
-        }
-
-        setImages(imgs);
-      } catch (e: any) {
-        if (cancelled) return;
-        console.error("[LivePhotoPane] fetch threw:", e);
-        setError(e?.message || "Network error");
-        setImages([]);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-
-    // Let main content paint first
-    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-      (window as any).requestIdleCallback(doFetch, { timeout: 1500 });
-    } else {
-      doFetch();
-    }
-
-    return () => {
-      cancelled = true;
-    };
-
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [depKey]);
-
-  return { images, loading, error };
-}
 
 export default function LivePhotoPane({
   terms,
   count = 18,
-  orientation,
   className = "",
+  columns = 3,
+  rowSize = 92,
 }: Props) {
-  const { images, loading, error } = useImageSearch(terms, count);
+  const [items, setItems] = React.useState<ImgItem[]>([]);
+  const [loading, setLoading] = React.useState(false);
+
+  // Build a stable key for deps to keep ESLint happy without re-fetching too often
+  const termKey = React.useMemo(() => terms.join(" | "), [terms]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      if (!terms || terms.length === 0) {
+        setItems([]);
+        return;
+      }
+      try {
+        setLoading(true);
+        const res = await fetch("/api/images", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            // Prefer Wikimedia/Openverse providers server-side
+            terms,
+            count,
+          }),
+          // No-store to keep rails fresh across different destinations
+          cache: "no-store",
+        });
+        if (!res.ok) {
+          console.warn("[LivePhotoPane] /api/images non-OK:", res.status);
+          setItems([]);
+          return;
+        }
+        const json = await res.json();
+        const urls: string[] = Array.isArray(json?.images)
+          ? json.images
+              .map((im: any) => (im && typeof im.url === "string" ? im.url : null))
+              .filter(Boolean)
+          : [];
+        const out: ImgItem[] = urls.slice(0, count).map((u) => ({
+          url: u,
+          alt: terms[0] || "travel image",
+        }));
+        if (!cancelled) {
+          // log for debugging (why images might not appear)
+          console.log("[LivePhotoPane] fetched images:", out);
+          setItems(out);
+        }
+      } catch (e) {
+        console.warn("[LivePhotoPane] fetch error:", (e as Error).message);
+        if (!cancelled) setItems([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+    // Only refetch when the set of terms or count change materially
+  }, [termKey, count]);
+
+  // Simple patterned collage: make a repeating span pattern for variety.
+  // We use a CSS grid with fixed auto-rows to get masonry-like blocks via row-span.
+  const slotClass = (i: number) => {
+    // cycle over a 10-item pattern
+    switch (i % 10) {
+      case 0:
+        return "col-span-2 row-span-2";
+      case 1:
+        return "row-span-1";
+      case 2:
+        return "row-span-2";
+      case 3:
+        return "row-span-1";
+      case 4:
+        return "col-span-2 row-span-1";
+      case 5:
+        return "row-span-1";
+      case 6:
+        return "row-span-2";
+      case 7:
+        return "row-span-1";
+      case 8:
+        return "col-span-2 row-span-1";
+      default:
+        return "row-span-1";
+    }
+  };
 
   return (
     <aside
-      data-orientation={orientation || "rail"}
-      className={clsx(
-        "rounded-2xl bg-white/70 backdrop-blur",
-        "p-3 md:p-3 border shadow-inner",
-        "min-h-[1400px] max-h-[calc(100vh-6rem)] overflow-y-auto",
-        className
-      )}
-      aria-busy={loading ? "true" : "false"}
+      className={`w-full ${className}`}
+      aria-label="Travel photo collage"
+      data-testid="live-photo-pane"
     >
-      {/* grid of images */}
-      <div className="grid grid-cols-1 gap-3">
-        {images.map((im, idx) => {
-          const eager = idx < 2;
+      <div
+        className={`grid gap-2`}
+        style={{
+          gridTemplateColumns: `repeat(${Math.max(2, columns)}, minmax(0, 1fr))`,
+          gridAutoRows: `${rowSize}px`,
+        }}
+      >
+        {items.map((im, i) => {
+          const eager = i < 6; // aggressively preload the first few for snappy paint
           return (
             <figure
-              key={`${im.src}-${idx}`}
-              className="relative w-full overflow-hidden rounded-xl border bg-white"
-              style={{ aspectRatio: "4 / 5" }}
+              key={`${im.url}-${i}`}
+              className={`relative overflow-hidden rounded-xl bg-neutral-100 ${slotClass(
+                i
+              )}`}
             >
               <Image
-                src={im.src}
-                alt={im.title || "Photo"}
+                src={im.url}
+                alt={im.alt}
                 fill
-                sizes="(max-width: 1024px) 50vw, 360px"
+                sizes="(max-width: 768px) 50vw, 420px"
                 className="object-cover"
-                priority={eager}
                 loading={eager ? "eager" : "lazy"}
+                // leave decoding as auto; next/image optimizes
               />
-              {im.title && (
-                <figcaption className="absolute bottom-0 left-0 right-0 bg-white/70 text-[11px] px-2 py-1 line-clamp-1">
-                  {im.title}
-                </figcaption>
-              )}
             </figure>
           );
         })}
       </div>
 
-      {/* Empty / error states */}
-      {loading && images.length === 0 && (
-        <div className="mt-2 grid gap-3">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div
-              key={i}
-              className="h-48 rounded-xl bg-gradient-to-r from-neutral-100 via-neutral-200 to-neutral-100 animate-pulse"
-            />
-          ))}
-        </div>
-      )}
-
-      {!loading && !error && images.length === 0 && (
-        <div className="text-xs text-neutral-500 p-2">
-          No images found for: <span className="font-mono break-all">{terms.join(", ")}</span>
-        </div>
-      )}
-
-      {error && (
-        <div className="text-xs text-red-600 p-2">
-          {error}. Check server logs for <code>/api/images</code>.
-        </div>
+      {/* subtle loading hint */}
+      {loading && items.length === 0 && (
+        <div className="text-xs text-neutral-500 mt-2">Loading photos…</div>
       )}
     </aside>
   );
