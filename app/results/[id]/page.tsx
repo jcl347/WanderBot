@@ -12,8 +12,6 @@ import { q } from "@/lib/db";
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-type PageProps = { params: { id: string } };
-
 type DestRow = {
   slug: string;
   name: string;
@@ -45,9 +43,9 @@ const CARD_COLORS = [
   { from: "from-violet-50", to: "to-violet-100/60" },
 ];
 
-export default async function ResultsPage({ params }: PageProps) {
-  const id = Array.isArray(params?.id) ? params.id[0] : params?.id;
-
+export default async function ResultsPage(props: any) {
+  // Support both the old (incorrect) Promise shape and the normal object shape.
+  const { id } = await props?.params ?? {};
   if (!id) {
     return (
       <BackgroundMap>
@@ -95,7 +93,7 @@ export default async function ResultsPage({ params }: PageProps) {
     const rows = await q<any>("select * from plans where id = $1", [id]);
     plan = rows?.[0] ?? null;
 
-    // If the row isn't there yet (race with /api/plan insert), show a soft fallback instead of 404
+    // Soft fallback while the DB insert finishes
     if (!plan) {
       return (
         <BackgroundMap>
@@ -110,8 +108,7 @@ export default async function ResultsPage({ params }: PageProps) {
               <h1 className="text-xl font-semibold">Preparing your plan…</h1>
               <p className="mt-2 text-neutral-700">
                 We couldn’t find a plan for id{" "}
-                <code className="font-mono">{id}</code> yet. This often means the
-                save is still finishing. Try refreshing in a moment.
+                <code className="font-mono">{id}</code> yet. Try refreshing in a moment.
               </p>
             </SectionCard>
           </div>
@@ -157,8 +154,6 @@ export default async function ResultsPage({ params }: PageProps) {
     .filter(Boolean) as { position: [number, number]; label: string }[];
 
   const center: [number, number] = markers.length ? markers[0]!.position : [30, -30];
-
-  console.log("[results] pins from model map_center:", markers.length, "of", dests.length);
 
   return (
     <BackgroundMap>
