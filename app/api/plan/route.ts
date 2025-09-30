@@ -7,8 +7,15 @@ import { q } from "@/lib/db";
 
 export const runtime = "nodejs";
 
-// ---------------- helpers ----------------
+// ---------------- knobs ----------------
 const MODEL = process.env.OPENAI_MODEL || "gpt-4.1";
+const MAX_TOKENS = Number(process.env.PLAN_MAX_TOKENS || 12000);
+
+// how aggressively to preload images (safe caps applied downstream)
+const MAX_PREVIEW_IMAGES = Number(process.env.MAX_PREVIEW_IMAGES || 48); // unique URLs to keep
+const MAX_IMAGE_TERMS = Number(process.env.MAX_IMAGE_TERMS || 28);        // how many short terms to attempt
+
+// ---------------- helpers ----------------
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
 // stringify + null-safe
@@ -88,7 +95,7 @@ const DestSchema = z.object({
 
   // imagery (model + server enrichment)
   image_queries: z.array(z.string()).optional(),
-  image_queries_short: z.array(z.string()).optional(), // NEW: model should return strictly 2-word, landmark/vacation terms
+  image_queries_short: z.array(z.string()).optional(), // strictly 2-word landmark/vacation terms
   preview_images: z.array(z.string().url()).optional(),
 
   photos: z.array(z.string().url()).optional(),
@@ -112,15 +119,11 @@ function listMonthsInclusive(startYM: string, endYM: string): string[] {
   const [sy, sm] = startYM.split("-").map(Number);
   const [ey, em] = endYM.split("-").map(Number);
   const out: string[] = [];
-  let y = sy,
-    m = sm;
+  let y = sy, m = sm;
   while (y < ey || (y === ey && m <= em)) {
     out.push(`${y}-${String(m).padStart(2, "0")}`);
     m++;
-    if (m > 12) {
-      m = 1;
-      y++;
-    }
+    if (m > 12) { m = 1; y++; }
   }
   return out;
 }
@@ -246,7 +249,7 @@ function fallbackImageQueries(cityName: string, markerNames: string[]) {
       seen.add(key);
       out.push(q);
     }
-    if (out.length >= 12) break;
+    if (out.length >= 16) break; // allow a bit more variety
   }
   return out;
 }
@@ -448,8 +451,7 @@ function normalizeTimeframe(tf: { startMonth: string; endMonth: string }) {
 
 // ---------------- vacation term helpers (strictly 1–2 tokens) ----------------
 const CITY_PREFIXES = new Set([
-  "new", "los", "las", "san", "santa", "fort", "rio", "são", "sao", "kuala",
-  "ho", "tel", "buenos", "abu", "cape", "phnom", "st.", "saint"
+  "new","los","las","san","santa","fort","rio","são","sao","kuala","ho","tel","buenos","abu","cape","phnom","st.","saint"
 ]);
 const LANDMARK_WORDS = [
   "beach","harbor","skyline","castle","palace","cathedral","basilica","temple","mosque",
@@ -467,17 +469,17 @@ function cityRootFromTerm(term: string): string {
   if (CITY_PREFIXES.has(first) && t.length >= 2) return `${t[0]} ${t[1]}`;
   return t[0];
 }
-function toTwoWordLandmarks(terms: string[], limit = 24): string[] {
+function toTwoWordLandmarks(terms: string[], limit = 48): string[] {
   const roots = Array.from(new Set(terms.map(cityRootFromTerm).filter(Boolean)));
   const out: string[] = [];
   for (const root of roots) {
     const rTok = tok(root);
     if (rTok.length >= 2) {
-      out.push(root); // already 2 tokens
+      out.push(root); // already 2 tokens (e.g., New York)
       continue;
     }
     for (const w of LANDMARK_WORDS) out.push(`${root} ${w}`);
-    out.push(root); // include city alone
+    out.push(root); // include the city alone as a 1-token fallback (Wikimedia often returns good stuff)
   }
   return Array.from(new Set(out)).slice(0, limit);
 }
@@ -540,7 +542,7 @@ EXAMPLE DESTINATION (shape only):
     "Santa Monica Pier"
   ],
   "image_queries_short": [
-    "Los Angeles skyline", "Los Angeles beach", "Los Angeles pier"
+    "Los Angeles beach", "Los Angeles skyline", "Los Angeles pier", "Los Angeles sunset"
   ]
 }
 `.trim();
@@ -575,13 +577,13 @@ Hard requirements (for each destination):
   • "months": cover every month in the window; each "note" names a major event/festival or a strong seasonal hook.
   • Map: "map_center" { "lat": number, "lon": number } and **6–10 "map_markers"** with numeric "position": [lat, lon] and short "blurb".
   • Imagery (two arrays):
-      - "image_queries": **8–12** natural phrases "<city> <one keyword/POI>" for variety (e.g., "Miami South Beach", "Miami nightlife").
-      - "image_queries_short": **10–18** **strictly two-word, landmark/vacation** terms:
+      - "image_queries": **12–20** natural phrases "<city> <one keyword/POI>" for variety (e.g., "Miami South Beach", "Miami nightlife").
+      - "image_queries_short": **24–40** **strictly two-word, landmark/vacation** terms:
         Rules:
-          1) If the city name has two tokens (e.g., "New York"), use **just the city** as a two-word term.
-          2) Otherwise pair "<City> <OneWord>" where the second token is drawn from this single-token set:
+          1) If the city name itself is two tokens (e.g., "New York", "Rio de"), use the two-word city as a term.
+          2) Otherwise pair "<City> <OneWord>" where the second token is from:
              { beach, harbor, skyline, castle, palace, cathedral, basilica, temple, mosque, pagoda, bridge, tower, market, plaza, square, museum, park, garden, lighthouse, promenade, waterfront, waterfall, island, fortress, ruins, sunset }.
-          3) Absolutely no terms longer than two tokens. Avoid punctuation.
+          3) Absolutely no terms longer than two tokens. No punctuation. Vacation vibe over generic civic shots.
 - If any traveler "dislikes travel", bias location near ${anchor}. Otherwise balance cost vs. interests.
 
 Return JSON like:
@@ -593,7 +595,7 @@ Return JSON like:
 `.trim();
 }
 
-// ---------------- Wikimedia preload (server-side, no internal hop) ----------------
+// ---------------- Wikimedia preload (server-side, big-but-safe) ----------------
 type Img = { url: string; title?: string; source: "wikimedia" };
 
 async function fetchWikimedia(term: string, limit: number): Promise<Img[]> {
@@ -605,9 +607,9 @@ async function fetchWikimedia(term: string, limit: number): Promise<Img[]> {
     generator: "search",
     gsrnamespace: "6", // File namespace
     gsrsearch: term,
-    gsrlimit: String(Math.min(50, Math.max(8, limit))),
+    gsrlimit: String(Math.min(50, Math.max(10, limit))),
     iiprop: "url|mime|size",
-    iiurlwidth: "1280",
+    iiurlwidth: "1600", // slightly bigger thumbs for crisper collages
     uselang: "en",
     origin: "*",
   });
@@ -643,22 +645,26 @@ function dedupeKeepFirst(images: Img[], limit: number): string[] {
   return out;
 }
 
-async function preloadImagesWikimedia(queries: string[], count = 6): Promise<string[]> {
+async function preloadImagesWikimedia(queries: string[], desired = MAX_PREVIEW_IMAGES): Promise<string[]> {
   if (!Array.isArray(queries) || queries.length === 0) return [];
-  const twoWord = toTwoWordLandmarks(queries, 24); // guard: enforce <=2 tokens
-  const maxTerms = Math.min(twoWord.length, 14);
-  const perTerm = Math.max(8, Math.ceil((count * 2) / Math.max(1, maxTerms)));
+  const limitKeep = Math.max(12, Math.min(96, desired)); // hard cap
 
-  const batches = twoWord.slice(0, maxTerms).map((t) => fetchWikimedia(t, perTerm));
+  // Enforce/expand to a rich set of strictly two-word terms
+  const terms = toTwoWordLandmarks(queries, Math.min(MAX_IMAGE_TERMS, 40)); // target ~28–40
+  const maxTerms = Math.min(terms.length, MAX_IMAGE_TERMS);
+  // pull more than we need and dedupe later
+  const perTerm = Math.max(8, Math.ceil((limitKeep * 2) / Math.max(1, maxTerms)));
+
+  const batches = terms.slice(0, maxTerms).map((t) => fetchWikimedia(t, perTerm));
   const chunks = await Promise.all(batches);
   const flat = chunks.flat();
 
-  // Fallback: try raw city roots if still low
-  let urls = dedupeKeepFirst(flat, Math.max(6, count));
-  if (urls.length < count) {
-    const roots = Array.from(new Set(queries.map(cityRootFromTerm).filter(Boolean))).slice(0, 8);
+  // Fallback: also query raw city roots if still low
+  let urls = dedupeKeepFirst(flat, limitKeep);
+  if (urls.length < limitKeep) {
+    const roots = Array.from(new Set(queries.map(cityRootFromTerm).filter(Boolean))).slice(0, 10);
     const rootChunks = await Promise.all(roots.map((r) => fetchWikimedia(r, perTerm)));
-    urls = dedupeKeepFirst([...flat, ...rootChunks.flat()], Math.max(6, count));
+    urls = dedupeKeepFirst([...flat, ...rootChunks.flat()], limitKeep);
   }
   return urls;
 }
@@ -708,8 +714,8 @@ export async function POST(req: NextRequest) {
     const completion = await openai.chat.completions.create({
       model: MODEL,
       response_format: { type: "json_object" },
-      temperature: 0.2,
-      max_tokens: 7500,
+      temperature: 0.25,
+      max_tokens: MAX_TOKENS,
       messages: [
         {
           role: "system",
@@ -791,29 +797,32 @@ export async function POST(req: NextRequest) {
           ? base.image_queries_short
               .map((s: unknown) => (typeof s === "string" ? s.trim() : ""))
               .filter(Boolean)
-              .slice(0, 24)
+              .slice(0, 40)
           : undefined;
 
         let imageQueries: string[] | undefined = Array.isArray(base.image_queries)
           ? base.image_queries
               .map((s: unknown) => (typeof s === "string" ? s.trim() : ""))
               .filter(Boolean)
-              .slice(0, 12)
+              .slice(0, 20)
           : undefined;
 
-        if (!imageQueriesShort || imageQueriesShort.length < 8) {
+        if (!imageQueriesShort || imageQueriesShort.length < 16) {
           // derive strict two-word variants from whatever we have (long → 2-word)
-          const seed = (imageQueries && imageQueries.length ? imageQueries : fallbackImageQueries(name, (cleanedMarkers || []).map((m) => m.name)));
-          imageQueriesShort = toTwoWordLandmarks(seed, 24);
+          const seed =
+            (imageQueries && imageQueries.length
+              ? imageQueries
+              : fallbackImageQueries(name, (cleanedMarkers || []).map((m) => m.name)));
+          imageQueriesShort = toTwoWordLandmarks(seed, 40);
         }
 
-        if (!imageQueries || imageQueries.length < 6) {
+        if (!imageQueries || imageQueries.length < 10) {
           const markerNames = (cleanedMarkers || []).map((m) => m.name);
           imageQueries = fallbackImageQueries(name, markerNames);
         }
 
-        // prefetch a small set of concrete image URLs via Wikimedia Commons
-        const previewImages = await preloadImagesWikimedia(imageQueriesShort, 8);
+        // prefetch a big set of concrete image URLs via Wikimedia Commons
+        const previewImages = await preloadImagesWikimedia(imageQueriesShort, MAX_PREVIEW_IMAGES);
 
         const analysis = {
           suggested_month: base.suggested_month,
@@ -941,7 +950,7 @@ export async function POST(req: NextRequest) {
       }))
     );
     console.log(
-      `[plan ${reqId}] image_queries counts=`,
+      `[plan ${reqId}] imagery counts=`,
       parsed.destinations.map((d) => ({
         slug: d.slug,
         long: d.image_queries?.length || 0,
