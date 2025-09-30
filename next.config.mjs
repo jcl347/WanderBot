@@ -7,13 +7,11 @@ const nextConfig = {
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "upload.wikimedia.org" },
-      { protocol: "https", hostname: "commons.wikimedia.org" },
+      { protocol: "https", hostname: "commons.wikimedia.org" }, // ok to keep
       { protocol: "https", hostname: "images.unsplash.com" },
       { protocol: "https", hostname: "api.openverse.engineering" },
       { protocol: "https", hostname: "static.openverse.engineering" },
-      // also allow our rail sources
-      { protocol: "https", hostname: "source.unsplash.com" },
-      { protocol: "https", hostname: "picsum.photos" },
+      { protocol: "https", hostname: "images.openverse.engineering" }, // <-- add this
     ],
   },
 
