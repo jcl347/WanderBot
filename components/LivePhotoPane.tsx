@@ -7,7 +7,7 @@ import clsx from "clsx";
 type Props = {
   terms: string[];
   count?: number;
-  /** purely cosmetic for data-attributes/testing */
+  /** Cosmetic/testing hint */
   orientation?: "left" | "right";
   className?: string;
 };
@@ -27,7 +27,7 @@ function useImageSearch(terms: string[], count: number) {
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  // Make dependencies stable for the effect
+  // Stable dependency key
   const depKey = React.useMemo(() => `${terms.join("\u0001")}|${count}`, [terms, count]);
 
   React.useEffect(() => {
@@ -68,7 +68,7 @@ function useImageSearch(terms: string[], count: number) {
           data?.reqId
         );
 
-        // aggressively warm up the first few
+        // Warm up the first few images
         if (typeof window !== "undefined") {
           const preload = imgs.slice(0, Math.min(6, imgs.length));
           for (const im of preload) {
@@ -79,12 +79,14 @@ function useImageSearch(terms: string[], count: number) {
               link.href = im.src;
               document.head.appendChild(link);
 
-              const i = new window.Image();
-              i.decoding = "async";
-              i.loading = "eager";
-              i.src = im.src;
-              // @ts-ignore - not all browsers support decode()
-              if (i.decode) i.decode().catch(() => {});
+              const htmlImg = new window.Image();
+              htmlImg.decoding = "async";
+              htmlImg.loading = "eager";
+              htmlImg.src = im.src;
+              const anyImg: any = htmlImg;
+              if (typeof anyImg.decode === "function") {
+                anyImg.decode().catch(() => {});
+              }
             } catch {}
           }
         }
@@ -100,7 +102,7 @@ function useImageSearch(terms: string[], count: number) {
       }
     };
 
-    // Defer a bit so main content paints first
+    // Let main content paint first
     if (typeof window !== "undefined" && "requestIdleCallback" in window) {
       (window as any).requestIdleCallback(doFetch, { timeout: 1500 });
     } else {
@@ -110,6 +112,8 @@ function useImageSearch(terms: string[], count: number) {
     return () => {
       cancelled = true;
     };
+
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [depKey]);
 
   return { images, loading, error };
