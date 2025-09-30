@@ -4,7 +4,6 @@ import * as React from "react";
 import Image from "next/image";
 import clsx from "clsx";
 
-// Props: `orientation` is optional; we just use it for DOM attributes/classes
 type Props = {
   terms: string[];
   count?: number;
@@ -27,8 +26,12 @@ function useImageSearch(terms: string[], count: number) {
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
+  // Build a stable dependency key to satisfy react-hooks/exhaustive-deps
+  const depKey = React.useMemo(() => `${terms.join("\u0001")}|${count}`, [terms, count]);
+
   React.useEffect(() => {
     let cancelled = false;
+
     const doFetch = async () => {
       if (!terms?.length) {
         setImages([]);
@@ -42,7 +45,6 @@ function useImageSearch(terms: string[], count: number) {
         qs.set("count", String(count));
         const res = await fetch(`/api/images?${qs.toString()}`, {
           method: "GET",
-          // Leverage the route's SWR caching
           headers: { Accept: "application/json" },
         });
         const data = await res.json();
@@ -56,20 +58,25 @@ function useImageSearch(terms: string[], count: number) {
         }
 
         const imgs: ApiImage[] = Array.isArray(data?.images) ? data.images : [];
-        console.log("[LivePhotoPane] terms=", terms, "returned=", imgs.length, "reqId=", data?.reqId);
+        console.log(
+          "[LivePhotoPane] terms=",
+          terms,
+          "returned=",
+          imgs.length,
+          "reqId=",
+          data?.reqId
+        );
 
-        // Preload top N to speed up first paint
+        // Preload first few
         const preload = imgs.slice(0, Math.min(6, imgs.length));
         for (const im of preload) {
           try {
-            // 1) <link rel="preload" as="image">
             const link = document.createElement("link");
             link.rel = "preload";
             link.as = "image";
             link.href = im.src;
             document.head.appendChild(link);
 
-            // 2) JS warmup (fills HTTP cache even if link rel is ignored)
             const i = new window.Image();
             i.src = im.src;
           } catch {}
@@ -86,8 +93,6 @@ function useImageSearch(terms: string[], count: number) {
       }
     };
 
-    // Start during idle time if possible
-    // (we still run immediately if rIC isn't available)
     if ("requestIdleCallback" in window) {
       (window as any).requestIdleCallback(doFetch, { timeout: 1200 });
     } else {
@@ -97,7 +102,7 @@ function useImageSearch(terms: string[], count: number) {
     return () => {
       cancelled = true;
     };
-  }, [JSON.stringify(terms), count]);
+  }, [depKey]); // ← single stable dependency
 
   return { images, loading, error };
 }
@@ -110,8 +115,6 @@ export default function LivePhotoPane({
 }: Props) {
   const { images, loading, error } = useImageSearch(terms, count);
 
-  // Extra roomy layout so the rails feel “wide” and not cramped.
-  // Each tile uses a 4:5-ish portrait ratio, perfect for side rails.
   return (
     <aside
       data-orientation={orientation || "rail"}
@@ -125,19 +128,18 @@ export default function LivePhotoPane({
     >
       <div className="grid grid-cols-1 gap-3">
         {images.map((im, idx) => {
-          // First few are eager/priority to boost LCP for the side rails
           const eager = idx < 2;
           return (
             <figure
               key={im.src + "-" + idx}
               className="relative w-full overflow-hidden rounded-xl border bg-white"
-              style={{ aspectRatio: "4 / 5" }} // stable layout to avoid CLS
+              style={{ aspectRatio: "4 / 5" }}
             >
               <Image
                 src={im.src}
                 alt={im.title || "Photo"}
                 fill
-                sizes="(max-width: 1024px) 50vw, 320px"
+                sizes="(max-width: 1024px) 50vw, 360px"
                 className="object-cover"
                 priority={eager}
                 loading={eager ? "eager" : "lazy"}
@@ -150,18 +152,3 @@ export default function LivePhotoPane({
             </figure>
           );
         })}
-      </div>
-
-      {!images.length && !loading && !error && (
-        <div className="text-xs text-neutral-500 p-2">
-          No images found for: <span className="font-mono">{terms.join(", ")}</span>
-        </div>
-      )}
-      {error && (
-        <div className="text-xs text-red-600 p-2">
-          {error} — check server logs for /api/images.
-        </div>
-      )}
-    </aside>
-  );
-}
