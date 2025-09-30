@@ -2,23 +2,58 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
+// Make sure this isn't statically cached at build time
+export const dynamic = "force-dynamic";
 
-type Img = { url: string; title?: string; source: "wikimedia" | "openverse" };
+type Img = {
+  url: string;
+  title?: string;
+  source: "wikimedia";
+};
 
-// --- helpers ---
-function okImages(images: Img[], max = 40): Img[] {
+// -------------- tiny helpers --------------
+function parseTerms(q?: string, termsRaw?: unknown): string[] {
+  const out: string[] = [];
+  if (Array.isArray(termsRaw)) {
+    for (const t of termsRaw) if (typeof t === "string" && t.trim()) out.push(t.trim());
+  }
+  if (typeof q === "string" && q.trim()) {
+    for (const t of q.split(",").map((s) => s.trim())) if (t) out.push(t);
+  }
+  // keep unique & sane length
+  return Array.from(new Set(out)).slice(0, 12);
+}
+
+function dedupeKeepFirst(images: Img[], limit: number): Img[] {
   const seen = new Set<string>();
   const out: Img[] = [];
   for (const im of images) {
-    const key = im.url.trim();
+    const key = im.url;
     if (!key || seen.has(key)) continue;
     seen.add(key);
     out.push(im);
-    if (out.length >= max) break;
+    if (out.length >= limit) break;
   }
   return out;
 }
 
+function json(data: unknown, status = 200, preloadLinks?: string[]): NextResponse {
+  const headers: Record<string, string> = {
+    "content-type": "application/json; charset=utf-8",
+    "Cache-Control": "public, max-age=60, s-maxage=600, stale-while-revalidate=86400",
+  };
+  if (preloadLinks && preloadLinks.length) {
+    // Multiple Link headers are allowed; combine as a single comma-separated header.
+    headers["Link"] = preloadLinks.map((u) => `<${u}>; rel=preload; as=image; crossorigin`).join(", ");
+  }
+  return new NextResponse(JSON.stringify(data), { status, headers });
+}
+
+// -------------- Wikimedia-only fetch --------------
+/**
+ * Fetch photos from Wikimedia Commons Files namespace for a single term.
+ * We request 1280px thumbnails for good balance of quality/weight.
+ */
 async function fetchWikimedia(term: string, limit: number): Promise<Img[]> {
   if (!term) return [];
   const params = new URLSearchParams({
@@ -28,156 +63,106 @@ async function fetchWikimedia(term: string, limit: number): Promise<Img[]> {
     generator: "search",
     gsrnamespace: "6", // File namespace
     gsrsearch: term,
-    gsrlimit: String(Math.min(20, Math.max(5, limit))),
-    iiprop: "url|mime",
+    gsrlimit: String(Math.min(50, Math.max(5, limit))),
+    iiprop: "url|mime|size",
     iiurlwidth: "1280",
+    uselang: "en",
     origin: "*",
   });
+
   const url = `https://commons.wikimedia.org/w/api.php?${params.toString()}`;
 
   try {
     const res = await fetch(url, { next: { revalidate: 600 } });
     if (!res.ok) return [];
-    const json: any = await res.json();
-    const pages = json?.query?.pages || {};
-    const imgs: Img[] = Object.values(pages)
-      .map((p: any) => {
-        const ii = Array.isArray(p?.imageinfo) ? p.imageinfo[0] : null;
-        const link = ii?.thumburl || ii?.url;
-        if (!link) return null;
-        return { url: link as string, title: p?.title, source: "wikimedia" as const };
-      })
-      .filter(Boolean);
-    return imgs.slice(0, limit);
+    const data: any = await res.json();
+    const pages: Record<string, any> = data?.query?.pages || {};
+
+    // Build output without nulls
+    const out: Img[] = [];
+    for (const p of Object.values(pages) as any[]) {
+      const ii = Array.isArray(p?.imageinfo) ? p.imageinfo[0] : null;
+      const link = typeof ii?.thumburl === "string" ? ii.thumburl : (typeof ii?.url === "string" ? ii.url : "");
+      if (!link) continue;
+
+      // Prefer larger thumbs when provided
+      out.push({
+        url: link,
+        title: typeof p?.title === "string" ? p.title : undefined,
+        source: "wikimedia",
+      });
+    }
+    return out.slice(0, limit);
   } catch {
     return [];
   }
 }
 
-async function fetchOpenverse(term: string, limit: number): Promise<Img[]> {
-  if (!term) return [];
-  const params = new URLSearchParams({
-    q: term,
-    page_size: String(Math.min(50, Math.max(5, limit * 2))),
-    fields: "thumbnail,url,title,source,provider",
-  });
-  const url = `https://api.openverse.engineering/v1/images/?${params.toString()}`;
-
-  try {
-    const res = await fetch(url, { next: { revalidate: 600 } });
-    if (!res.ok) return [];
-    const json: any = await res.json();
-    const results: any[] = Array.isArray(json?.results) ? json.results : [];
-    const imgs: Img[] = results
-      .map((r) => {
-        // Prefer Openverse CDN thumbnail (whitelisted in next.config), else source URL.
-        const link: string | undefined = r?.thumbnail || r?.url;
-        if (!link) return null;
-        return {
-          url: link,
-          title: r?.title || r?.source || r?.provider,
-          source: "openverse" as const,
-        };
-      })
-      .filter(Boolean);
-    return imgs.slice(0, limit);
-  } catch {
-    return [];
-  }
-}
-
-function parseTerms(inputQ?: string, inputTerms?: unknown): string[] {
-  const out: string[] = [];
-  if (Array.isArray(inputTerms)) {
-    for (const t of inputTerms) {
-      if (typeof t === "string" && t.trim()) out.push(t.trim());
-    }
-  }
-  if (typeof inputQ === "string" && inputQ.trim()) {
-    for (const t of inputQ.split(",").map((s) => s.trim())) {
-      if (t) out.push(t);
-    }
-  }
-  // de-dupe
-  return Array.from(new Set(out)).slice(0, 12);
-}
-
-// A small opinionated booster for “vacation-y” searches
-function enrichVacationTerms(terms: string[]): string[] {
-  const flavor = [
-    "sunset", "golden hour", "beach", "rooftop pool", "old town",
-    "harbor promenade", "market street food", "nightlife", "boardwalk",
-    "waterfront", "viewpoint", "coastline", "hiking trail", "waterfall",
-  ];
+// -------------- orchestrator --------------
+/**
+ * Query Wikimedia for each term (capped), flatten, dedupe, and trim.
+ * For “vacation vibe” relevance while staying Wikimedia-only, we expand each base term
+ * into a few scenic variants (beach, sunset, skyline). You can remove/adjust if undesired.
+ */
+function expandVacationFlairs(terms: string[]): string[] {
+  const flairs = ["beach", "sunset", "skyline", "harbor", "old town", "coastline", "viewpoint", "market"];
   const out: string[] = [];
   for (const t of terms) {
-    // If term already includes a city, append a few vacation vibes
-    if (/\b[a-z]+\s+[a-z]+/i.test(t)) {
-      for (const f of flavor) out.push(`${t} ${f}`);
-      out.push(t);
-    } else {
-      out.push(t);
-    }
-    if (out.length > 40) break;
+    const base = t.trim();
+    if (!base) continue;
+    out.push(base);
+    for (const f of flairs) out.push(`${base} ${f}`);
   }
-  return Array.from(new Set(out));
+  // avoid overly huge queries
+  return Array.from(new Set(out)).slice(0, 24);
 }
 
-async function searchAll(terms: string[], count: number): Promise<Img[]> {
-  const boosted = enrichVacationTerms(terms);
-  const perTerm = Math.max(4, Math.ceil(count / Math.max(1, Math.min(terms.length, 6))));
-  const batches = boosted.slice(0, 10).map(async (t) => {
-    const a = await fetchWikimedia(t, perTerm);
-    if (a.length >= perTerm) return a;
-    const b = await fetchOpenverse(t, perTerm - a.length);
-    return [...a, ...b];
-  });
+async function searchWikimediaOnly(terms: string[], count: number): Promise<Img[]> {
+  const expanded = expandVacationFlairs(terms);
+  const perTerm = Math.max(4, Math.ceil(count / Math.max(1, Math.min(expanded.length, 8))));
+
+  const batches = expanded.slice(0, 8).map((t) => fetchWikimedia(t, perTerm));
   const chunks = await Promise.all(batches);
   const flat = chunks.flat();
-  return okImages(flat, Math.max(3, Math.min(60, count)));
+  // Deduplicate and cap count
+  return dedupeKeepFirst(flat, Math.max(3, Math.min(60, count)));
 }
 
-function json(data: any, status = 200) {
-  return new NextResponse(JSON.stringify(data), {
-    status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "Cache-Control": "public, max-age=60, s-maxage=600, stale-while-revalidate=86400",
-    },
-  });
-}
-
-// --- GET /api/images?q=...&count=... ---
+// -------------- handlers --------------
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
   const q = searchParams.get("q") || undefined;
   const count = Number(searchParams.get("count") || "24");
+  const preload = Number(searchParams.get("preload") || "8"); // how many to send as Link: preload
+
   const terms = parseTerms(q, undefined);
   if (!terms.length) return json({ images: [] }, 200);
 
-  const images = await searchAll(terms, count);
-  // Server log for debugging
+  const images = await searchWikimediaOnly(terms, count);
+  // Preload first few in the browser via Link header
+  const preloadLinks = images.slice(0, Math.max(0, Math.min(preload, images.length))).map((im) => im.url);
+
   console.log("[/api/images GET] terms=", terms, " ->", images.length, "images");
-  return json({ images }, 200);
+  return json({ images }, 200, preloadLinks);
 }
 
-// --- POST /api/images  { q?: string, terms?: string[], count?: number } ---
 export async function POST(req: NextRequest) {
   let body: any = {};
   try {
     body = await req.json();
   } catch {
-    // ignore
+    // ignore parse errors; treat as empty
   }
   const q = typeof body?.q === "string" ? body.q : undefined;
   const count = Number(body?.count ?? 24) || 24;
+  const preload = Number(body?.preload ?? 0) || 0; // POST is usually server-to-server; preload headers optional
   const terms = parseTerms(q, body?.terms);
 
-  if (!terms.length) {
-    return json({ images: [] }, 200);
-  }
+  if (!terms.length) return json({ images: [] }, 200);
 
-  const images = await searchAll(terms, count);
+  const images = await searchWikimediaOnly(terms, count);
+  const preloadLinks = preload ? images.slice(0, Math.min(preload, images.length)).map((im) => im.url) : undefined;
+
   console.log("[/api/images POST] terms=", terms, " ->", images.length, "images");
-  return json({ images }, 200);
+  return json({ images }, 200, preloadLinks);
 }
