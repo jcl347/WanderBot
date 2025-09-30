@@ -1,4 +1,3 @@
-// components/DestDetailClient.tsx
 "use client";
 
 import * as React from "react";
@@ -13,7 +12,6 @@ type Fare = {
   avgUSD: number;
   monthBreakdown?: Array<{ month: string; avgUSD: number }>;
 };
-
 type Marker = { name?: string; position?: [number, number] };
 
 function formatMonthYYYY(mm: string) {
@@ -74,11 +72,7 @@ function fillAndSmoothMonths(raw: Fare[]): Fare[] {
       mb.map((x) => ({ month: x.month.slice(0, 7), avgUSD: Number(x.avgUSD) || f.avgUSD || 0 }))
     );
     const mean = smoothed.reduce((a, x) => a + x.avgUSD, 0) / Math.max(1, smoothed.length);
-    return {
-      ...f,
-      avgUSD: Math.round(mean),
-      monthBreakdown: smoothed,
-    };
+    return { ...f, avgUSD: Math.round(mean), monthBreakdown: smoothed };
   });
 }
 
@@ -89,29 +83,15 @@ function buildCityTerms(dest: any, limit = 16) {
     ? analysis.image_queries.filter((s: unknown): s is string => typeof s === "string" && !!s.trim())
     : [];
 
-  if (model.length) {
-    const cleaned = model.map((t: string) => {
-      const one = t.replace(/\s+/g, " ").trim();
-      if (name && one.toLowerCase().startsWith(name.toLowerCase() + " ")) return one;
-      return name ? `${name} ${one}` : one;
-    });
-    return Array.from(new Set(cleaned)).slice(0, limit);
-  }
+  const done = model.length
+    ? model
+    : [
+        "beach", "resort", "ocean view", "sunset", "promenade",
+        "old town", "harbor", "pool", "rooftop bar", "nightlife",
+        "street food", "market", "viewpoint", "lighthouse"
+      ].map((k) => (name ? `${name} ${k}` : k));
 
-  const basics = [
-    "skyline",
-    "downtown",
-    "beach",
-    "park",
-    "museum",
-    "nightlife",
-    "market",
-    "street",
-    "festival",
-    "landmarks",
-  ].map((k) => (name ? `${name} ${k}` : k));
-
-  return Array.from(new Set(basics)).slice(0, limit);
+  return Array.from(new Set(done)).slice(0, limit);
 }
 
 export default function DestDetailClient({ dest }: { dest: any }) {
@@ -125,7 +105,6 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     for (const f of fares) for (const m of f.monthBreakdown || []) s.add(m.month);
     const arr = Array.from(s).sort();
     if (arr.length) return arr;
-
     const d = new Date();
     const a = new Date(d.getFullYear(), d.getMonth(), 1);
     const b = new Date(d.getFullYear(), d.getMonth() + 1, 1);
@@ -146,102 +125,98 @@ export default function DestDetailClient({ dest }: { dest: any }) {
 
   const analysis = dest?.analysis ?? {};
   const rawMarkers: Marker[] = Array.isArray(analysis.map_markers) ? analysis.map_markers : [];
-
   let pins =
     rawMarkers
       .map((m) => {
         const lat = Number(m?.position?.[0]);
         const lon = Number(m?.position?.[1]);
         if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-        return {
-          position: [lat, lon] as [number, number],
-          label: String(m?.name || dest?.name || "Pin"),
-        };
+        return { position: [lat, lon] as [number, number], label: String(m?.name || dest?.name || "Pin") };
       })
       .filter(Boolean) as { position: [number, number]; label: string }[];
 
   const mc = analysis.map_center ?? dest.map_center;
   const hasCenter = Number.isFinite(mc?.lat) && Number.isFinite(mc?.lon);
-  if (pins.length === 0 && hasCenter) {
-    pins = [{ position: [mc.lat, mc.lon], label: String(dest?.name || "Center") }];
-  }
+  if (pins.length === 0 && hasCenter) pins = [{ position: [mc.lat, mc.lon], label: String(dest?.name || "Center") }];
   const center: [number, number] | undefined = hasCenter ? [mc.lat, mc.lon] : pins[0]?.position;
 
-  const terms = React.useMemo(() => buildCityTerms(dest, 16), [dest]);
-  const mid = Math.max(1, Math.ceil(terms.length / 2));
-  const leftTerms = terms.slice(0, mid);
-  const rightTerms = terms.slice(mid);
+  const simpleTerms = React.useMemo(() => buildCityTerms(dest, 18), [dest]);
+  const mid = Math.max(1, Math.ceil(simpleTerms.length / 2));
+  const leftTerms = simpleTerms.slice(0, mid);
+  const rightTerms = simpleTerms.slice(mid);
 
   return (
-    <LiveCollage leftTerms={leftTerms} rightTerms={rightTerms} className="mt-6">
-      <div className="space-y-6">
-        <SectionCard>
-          <h1 className="text-3xl font-semibold">{dest.name}</h1>
-          <p className="text-neutral-700 whitespace-pre-line mt-3 text-lg leading-relaxed">
-            {dest.narrative}
-          </p>
-        </SectionCard>
+    <LiveCollage
+      leftTerms={leftTerms}
+      rightTerms={rightTerms}
+      centerTerms={simpleTerms}
+      railWidth={420}
+      middleClassName="md:px-2"
+    >
+      <SectionCard>
+        <h1 className="text-3xl font-semibold">{dest.name}</h1>
+        <p className="text-neutral-700 whitespace-pre-line mt-3 text-lg leading-relaxed">
+          {dest.narrative}
+        </p>
+      </SectionCard>
 
-        <SectionCard>
-          <h2 className="text-lg font-semibold mb-3">Monthly notes</h2>
-          {dest.months?.length ? (
-            <ul className="list-disc pl-6 text-sm">
-              {dest.months.map((m: any) => (
-                <li key={m.month}>
-                  <span className="font-medium">{formatMonthYYYY(m.month)}:</span> {m.note}
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <div className="text-sm text-neutral-500">No month notes.</div>
-          )}
-        </SectionCard>
+      <SectionCard>
+        <h2 className="text-lg font-semibold mb-3">Monthly notes</h2>
+        {dest.months?.length ? (
+          <ul className="list-disc pl-6 text-sm">
+            {dest.months.map((m: any) => (
+              <li key={m.month}>
+                <span className="font-medium">{formatMonthYYYY(m.month)}:</span> {m.note}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="text-sm text-neutral-500">No month notes.</div>
+        )}
+      </SectionCard>
 
-        <SectionCard>
-          <h2 className="text-lg font-semibold mb-3">Monthly fare trend</h2>
-          <MonthLine data={series} />
-          <p className="text-xs text-neutral-500 mt-2">
-            Estimated averages per traveler (round-trip, USD). Missing months are inferred and lightly smoothed.
-          </p>
-        </SectionCard>
+      <SectionCard>
+        <h2 className="text-lg font-semibold mb-3">Monthly fare trend</h2>
+        <MonthLine data={series} />
+        <p className="text-xs text-neutral-500 mt-2">
+          Estimated averages per traveler (round-trip, USD). Missing months are inferred and lightly smoothed.
+        </p>
+      </SectionCard>
 
-        <SectionCard>
-          <h2 className="text-lg font-semibold mb-3">Map</h2>
-          {center ? (
-            <div className="h-96">
-              <MapLeaflet center={center} zoom={pins.length > 1 ? 11 : 8} markers={pins} />
-            </div>
-          ) : (
-            <div className="text-sm text-neutral-500">
-              No map data available for this destination.
-            </div>
-          )}
-        </SectionCard>
-
-        <SectionCard>
-          <h2 className="text-lg font-semibold mb-3">Per-traveler average fares</h2>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="text-left">
-                  <th className="p-2">Traveler</th>
-                  <th className="p-2">From</th>
-                  <th className="p-2">Avg USD</th>
-                </tr>
-              </thead>
-              <tbody>
-                {fares.map((f, i) => (
-                  <tr key={i} className="border-t">
-                    <td className="p-2">{f.travelerName}</td>
-                    <td className="p-2">{f.from}</td>
-                    <td className="p-2">${Math.round(f.avgUSD).toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <SectionCard>
+        <h2 className="text-lg font-semibold mb-3">Map</h2>
+        {center ? (
+          <div className="h-96">
+            <MapLeaflet center={center} zoom={pins.length > 1 ? 11 : 8} markers={pins} />
           </div>
-        </SectionCard>
-      </div>
+        ) : (
+          <div className="text-sm text-neutral-500">No map data available for this destination.</div>
+        )}
+      </SectionCard>
+
+      <SectionCard>
+        <h2 className="text-lg font-semibold mb-3">Per-traveler average fares</h2>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="text-left">
+                <th className="p-2">Traveler</th>
+                <th className="p-2">From</th>
+                <th className="p-2">Avg USD</th>
+              </tr>
+            </thead>
+            <tbody>
+              {fares.map((f, i) => (
+                <tr key={i} className="border-t">
+                  <td className="p-2">{f.travelerName}</td>
+                  <td className="p-2">{f.from}</td>
+                  <td className="p-2">${Math.round(f.avgUSD).toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </SectionCard>
     </LiveCollage>
   );
 }
