@@ -51,9 +51,9 @@ function uniqBy<T>(arr: T[], key: (x: T) => string): T[] {
   return out;
 }
 
+// -------- Commons (primary) --------
+// IMPORTANT: use ii.thumburl if iiurlwidth is requested, otherwise ii.url
 async function searchCommons(term: string, pageSize: number): Promise<Photo[]> {
-  // Wikimedia Commons API – search, then get imageinfo with urls/sizes
-  // We’ll ask for 1280px variants where possible for good quality in rails.
   const u = new URL("https://commons.wikimedia.org/w/api.php");
   u.searchParams.set("action", "query");
   u.searchParams.set("format", "json");
@@ -62,7 +62,7 @@ async function searchCommons(term: string, pageSize: number): Promise<Photo[]> {
   u.searchParams.set("gsrsearch", term);
   u.searchParams.set("gsrlimit", String(Math.min(20, Math.max(1, pageSize))));
   u.searchParams.set("prop", "imageinfo");
-  u.searchParams.set("iiprop", "url|size");
+  u.searchParams.set("iiprop", "url|size|mime");
   u.searchParams.set("iiurlwidth", "1280");
 
   const res = await fetch(u.toString(), { next: { revalidate: 300 } });
@@ -76,13 +76,15 @@ async function searchCommons(term: string, pageSize: number): Promise<Photo[]> {
   for (const key of Object.keys(pages)) {
     const p = pages[key];
     const ii = Array.isArray(p?.imageinfo) ? p.imageinfo[0] : null;
-    const url: string | undefined = ii?.responsiveUrls?.[0]?.src || ii?.url;
-    const width = Number(ii?.width) || 1024;
-    const height = Number(ii?.height) || 683;
-    if (!url) continue;
+    const thumburl: string | undefined = ii?.thumburl; // <— correct field
+    const url: string | undefined = ii?.url;
+    const src = thumburl || url;
+    const width = Number(ii?.thumbwidth || ii?.width) || 1024;
+    const height = Number(ii?.thumbheight || ii?.height) || 683;
+    if (!src) continue;
     photos.push({
-      id: String(p?.pageid || url),
-      src: url,
+      id: String(p?.pageid || src),
+      src,
       width,
       height,
       alt: typeof p?.title === "string" ? p.title : undefined,
@@ -91,6 +93,7 @@ async function searchCommons(term: string, pageSize: number): Promise<Photo[]> {
   return photos;
 }
 
+// -------- Openverse (fallback) --------
 async function searchOpenverse(
   term: string,
   pageSize: number,
@@ -99,7 +102,6 @@ async function searchOpenverse(
   const u = new URL("https://api.openverse.engineering/v1/images/");
   u.searchParams.set("q", term);
   u.searchParams.set("page_size", String(Math.min(20, Math.max(1, pageSize))));
-  // Rough orientation hint
   if (orientation === "portrait") u.searchParams.set("aspect_ratio", "tall");
   else if (orientation === "landscape") u.searchParams.set("aspect_ratio", "wide");
   u.searchParams.set("license_type", "all");
@@ -135,26 +137,28 @@ export async function GET(req: NextRequest) {
       (termsRaw.length ? termsRaw : ["travel skyline city"]).map((t) => t.trim()),
       (x) => x.toLowerCase()
     ).slice(0, 14);
-
     const count = Math.min(60, Math.max(8, Number(searchParams.get("count")) || 24));
     const orientationParam = String(searchParams.get("side") || searchParams.get("orientation") || "portrait")
       .toLowerCase();
     const orientation: Orientation =
       orientationParam === "landscape" ? "landscape" : orientationParam === "any" ? "any" : "portrait";
 
-    // Split count across terms and fetch in parallel
     const perTerm = Math.max(2, Math.ceil(count / Math.max(1, terms.length)));
 
-    const commonsBatches = terms.map((t) => searchCommons(t, perTerm));
-    const commonsSettled = await Promise.allSettled(commonsBatches);
+    // Commons first
+    const commonsSettled = await Promise.allSettled(
+      terms.map((t) => searchCommons(t, perTerm))
+    );
     let photos = commonsSettled.flatMap((s) => (s.status === "fulfilled" ? s.value : []));
 
+    // Fallback if thin results
     if (photos.length < Math.max(6, count / 2)) {
-      // Fallback to Openverse for any missing slots
-      const ovBatches = terms.map((t) => searchOpenverse(t, perTerm, orientation));
-      const ovSettled = await Promise.allSettled(ovBatches);
-      const ov = ovSettled.flatMap((s) => (s.status === "fulfilled" ? s.value : []));
-      photos = photos.concat(ov);
+      const ovSettled = await Promise.allSettled(
+        terms.map((t) => searchOpenverse(t, perTerm, orientation))
+      );
+      photos = photos.concat(
+        ovSettled.flatMap((s) => (s.status === "fulfilled" ? s.value : []))
+      );
     }
 
     const images = uniqBy(photos, (p) => p.src).slice(0, count);
