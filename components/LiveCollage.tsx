@@ -5,18 +5,15 @@ import * as React from "react";
 import LivePhotoPane from "./LivePhotoPane";
 
 /**
- * Three-column wrapper:
- * - Desktop (md+):   [ left rail | children (analytics) | right rail ]
- * - Mobile (<md):    children only by default; optionally show bottom collage (merged)
- *
- * Props let you pass distinct terms per rail; if showBottomOnMobile is true,
- * it merges left+right for the mobile bottom rail automatically.
+ * Desktop (md+):   [ left rail | BIG center analytics | right rail ]
+ * Mobile:          children only by default (optional bottom collage)
  */
 export default function LiveCollage({
   leftTerms = [],
   rightTerms = [],
   bottomTerms,
-  railWidth = 420,
+  railWidth = 360,          // slightly slimmer rails so center can be thicker
+  centerMinWidth = 840,     // make the middle pane “thick”
   children,
   className = "",
   railClassName = "",
@@ -26,6 +23,7 @@ export default function LiveCollage({
   rightTerms?: string[];
   bottomTerms?: string[];
   railWidth?: number;
+  centerMinWidth?: number;
   children: React.ReactNode;
   className?: string;
   railClassName?: string;
@@ -36,17 +34,15 @@ export default function LiveCollage({
       bottomTerms && bottomTerms.length
         ? bottomTerms
         : [...leftTerms, ...rightTerms];
-    // Keep it snappy on mobile
     return Array.from(new Set(b)).slice(0, 16);
   }, [bottomTerms, leftTerms, rightTerms]);
 
   return (
     <div className={className}>
-      {/* Desktop: three-column with substantial, sticky rails */}
       <div
-        className="hidden md:grid gap-6"
+        className="hidden md:grid gap-8"
         style={{
-          gridTemplateColumns: `${railWidth}px minmax(0,1fr) ${railWidth}px`,
+          gridTemplateColumns: `${railWidth}px minmax(${centerMinWidth}px, 1fr) ${railWidth}px`,
         }}
       >
         <div className="sticky top-20 self-start">
@@ -60,8 +56,7 @@ export default function LiveCollage({
           )}
         </div>
 
-        {/* Analytics in the middle */}
-        <div>{children}</div>
+        <div className="min-w-0">{children}</div>
 
         <div className="sticky top-20 self-start">
           {rightTerms.length > 0 && (
@@ -75,7 +70,6 @@ export default function LiveCollage({
         </div>
       </div>
 
-      {/* Mobile: show only analytics by default; optional single bottom collage */}
       {showBottomOnMobile && mergedBottom.length > 0 && (
         <div className="md:hidden mt-6">
           <LivePhotoPane terms={mergedBottom} count={16} columns={2} />

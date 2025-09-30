@@ -86,13 +86,10 @@ const DestSchema = z.object({
     )
     .optional(),
 
-  // General queries (classic)
   image_queries: z.array(z.string()).optional(),
+  vacation_image_queries: z.array(z.string()).optional(), // NEW: stronger “vacation” vibes
 
-  // NEW: explicitly "vacation vibe" queries (preferred)
-  vacation_image_queries: z.array(z.string()).optional(),
-
-  // NEW: a few concrete URLs fetched on the server so the UI can preload
+  // server-side preloaded URLs so the UI can show images faster
   preview_images: z.array(z.string().url()).optional(),
 
   photos: z.array(z.string().url()).optional(),
@@ -210,92 +207,24 @@ function expandMonthsToRange(
   return out;
 }
 
-// Pull vibe hints from suggestions + personalities
-function deriveVibeKeywords(
-  travelers: z.infer<typeof Body>["travelers"],
-  suggestions?: string
-): string[] {
-  const text = `${suggestions || ""} ${travelers
-    .map((t) => t.personality || "")
-    .join(" ")}`.toLowerCase();
-
-  const vibes: string[] = [];
-  const add = (w: string) => {
-    if (!vibes.includes(w)) vibes.push(w);
-  };
-
-  // quick heuristics
-  if (/\bbeach|coast|island|ocean|snorkel|surf|sun\b/.test(text)) {
-    add("beach");
-    add("snorkeling");
-    add("coastal");
-    add("beach club");
-  }
-  if (/\bpool|hot\s*tub|spa|relax|resort|wellness|hammam\b/.test(text)) {
-    add("rooftop pool");
-    add("spa");
-    add("resort");
-  }
-  if (/\bfood|eat|restaurant|market|taco|sushi|brunch|street food\b/.test(text)) {
-    add("street food");
-    add("night market");
-    add("waterfront dining");
-  }
-  if (/\bbar|nightlife|music|club|jazz|cocktail\b/.test(text)) {
-    add("sky bar");
-    add("live music");
-    add("nightlife");
-  }
-  if (/\bhike|trail|mountain|viewpoint|sunrise|sunset\b/.test(text)) {
-    add("viewpoint");
-    add("sunset");
-    add("scenic overlook");
-  }
-  if (/\bkid|family|children|theme park|zoo|aquarium\b/.test(text)) {
-    add("family friendly");
-    add("water park");
-  }
-  if (/\bmuseum|art|gallery|historic|old town|castle|architecture\b/.test(text)) {
-    add("old town");
-    add("museum");
-    add("historic district");
-  }
-  if (vibes.length === 0) {
-    // pleasant defaults
-    vibes.push("sunset", "rooftop pool", "old town", "waterfront", "skyline");
-  }
-  return vibes;
-}
-
-// Build simple "City + one keyword" phrases when the model omits image queries
-function fallbackImageQueries(
-  cityName: string,
-  markerNames: string[],
-  vibeKeywords: string[] = []
-) {
+// Build simple "City + one keyword" phrases when the model omits image_queries
+function fallbackImageQueries(cityName: string, markerNames: string[]) {
   const city = String(cityName || "").trim();
   if (!city) return [];
 
-  // Core vacation-y ideas (short and image-friendly)
+  // Core one-word themes
   const themes = [
-    "sunset",
-    "rooftop pool",
-    "beach",
-    "waterfront",
-    "harbor",
-    "old town",
-    "market",
-    "street food",
+    "skyline",
+    "downtown",
     "nightlife",
-    "viewpoint",
-    "scenic overlook",
-    "botanical garden",
-    "promenade",
-    "lighthouse",
-    "beach club",
-    "cocktail bar",
-    "live music",
-    "spa",
+    "beach",
+    "museum",
+    "park",
+    "market",
+    "festival",
+    "street",
+    "harbor",
+    "food",
   ];
 
   // Up to 4 POIs trimmed to ≤2 tokens (e.g., "Wynwood Walls")
@@ -307,8 +236,7 @@ function fallbackImageQueries(
       return tokens.join(" ");
     });
 
-  // Merge vibes + themes + poi
-  const raw = [...vibeKeywords, ...themes, ...poi];
+  const raw = [...themes, ...poi];
 
   const out: string[] = [];
   const seen = new Set<string>();
@@ -497,7 +425,6 @@ function enforceFareCoverageAndSmooth(
 }
 
 // --- Time / month helpers ---
-// "YYYY-MM" for current month in UTC (deterministic on Vercel)
 function nowYM(): string {
   const d = new Date();
   const y = d.getUTCFullYear();
@@ -505,9 +432,8 @@ function nowYM(): string {
   return `${y}-${m}`;
 }
 function cmpYM(a: string, b: string) {
-  return a.localeCompare(b); // works for YYYY-MM
+  return a.localeCompare(b);
 }
-/** Ensure the start/end months are not in the past, and end >= start. */
 function normalizeTimeframe(tf: { startMonth: string; endMonth: string }) {
   const current = nowYM();
   let start = tf.startMonth?.slice(0, 7) || current;
@@ -541,7 +467,7 @@ function buildPrompt(input: z.infer<typeof Body>) {
     )
     .join("\n");
 
-  // Show numeric coords + short image queries explicitly
+  // Show numeric coords + short image queries explicitly (now with "vacation_image_queries")
   const example = `
 EXAMPLE DESTINATION (shape only):
 {
@@ -568,15 +494,17 @@ EXAMPLE DESTINATION (shape only):
   "map_markers": [
     { "name": "Santa Monica Pier", "position": [34.0101, -118.4965], "blurb": "Iconic pier" }
   ],
+  "image_queries": [
+    "Los Angeles skyline",
+    "Los Angeles street art",
+    "Grand Central Market food"
+  ],
   "vacation_image_queries": [
-    "Los Angeles sunset beach",
+    "Los Angeles beach sunset",
     "Los Angeles rooftop pool",
-    "Los Angeles waterfront promenade",
-    "Los Angeles sky bar",
-    "Los Angeles night market",
-    "Los Angeles scenic overlook",
-    "Los Angeles botanical garden",
-    "Santa Monica Pier"
+    "Santa Monica boardwalk",
+    "Venice Canals sunrise",
+    "Hollywood Hills viewpoint at golden hour"
   ]
 }
 `.trim();
@@ -611,11 +539,11 @@ Hard requirements:
     - "from" is the city name (e.g., "Austin" not "AUS").
   • "months": cover every month in the window; each "note" names a major event/festival or a strong seasonal hook.
   • Map: "map_center" { "lat": number, "lon": number } and **6–10 "map_markers"** with numeric "position": [lat, lon] and short "blurb".
-  • Imagery: Prefer **"vacation_image_queries"** (8–12 items) over "image_queries".
-    - Each item should be "<city> <vacation keyword/POI>" optimized for appealing travel photos (e.g., "sunset beach", "rooftop pool", "waterfront promenade", "old town at dusk", "night market", "sky bar", "scenic overlook", "botanical garden", "beach club", "lighthouse", "harbor at golden hour", "street food").
-    - Tailor the set to the group’s interests implied by the travelers and USER IDEAS (e.g., spa/pool, food/nightlife, kid-friendly, outdoors).
-    - Avoid brand names and people close-ups; favor **landscape, golden-hour, scenic, resort, and lifestyle** angles.
-
+  • Imagery:
+      - **8–12 "image_queries"** in the format "<city> <one keyword/POI>" (e.g., "Miami South Beach", "Miami nightlife", "Miami Wynwood Walls").
+      - **10–18 "vacation_image_queries"** that are photogenic, traveler-pleasing, and seasonal where relevant.
+        Make them **short, vacation-oriented** (e.g., "<city> beach club", "<city> rooftop pool sunset", "<city> old town golden hour", "<city> market street food", "<city> harbor promenade", "<city> waterfall hike").
+        Reflect ${suggestions || "the group’s interests"} and the month window ${monthWindow}.
 - If any traveler "dislikes travel", bias location near ${anchor}. Otherwise balance cost vs. interests.
 
 Return JSON like:
@@ -628,17 +556,20 @@ Return JSON like:
 }
 
 // ---------------- image preload (server-side best-effort) ----------------
-async function preloadImages(queries: string[], count = 4): Promise<string[]> {
+async function preloadImages(
+  origin: string,
+  queries: string[],
+  count = 4
+): Promise<string[]> {
   if (!Array.isArray(queries) || queries.length === 0) return [];
   try {
-    const base = process.env.NEXT_PUBLIC_BASE_URL?.replace(/\/$/, "") || "";
-    const res = await fetch(`${base}/api/images`, {
+    const url = new URL("/api/images", origin);
+    const res = await fetch(url.toString(), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        // Pass both a combined string and the terms array; the API can choose the best provider
-        q: queries.slice(0, 10).join(", "),
-        terms: queries.slice(0, 10),
+        q: queries.slice(0, 8).join(", "),
+        terms: queries.slice(0, 8),
         count: Math.max(3, Math.min(8, count)),
       }),
       cache: "no-store",
@@ -654,8 +585,8 @@ async function preloadImages(queries: string[], count = 4): Promise<string[]> {
           .filter(Boolean)
       : [];
     return urls.slice(0, Math.max(3, Math.min(8, count)));
-  } catch (e) {
-    console.warn("[images] preload exception:", (e as Error)?.message);
+  } catch (e: any) {
+    console.warn("[images] preload exception:", e?.message || e);
     return [];
   }
 }
@@ -748,7 +679,7 @@ export async function POST(req: NextRequest) {
     if (json.destinations.length > 5) json.destinations = json.destinations.slice(0, 5);
     while (json.destinations.length < 5) json.destinations.push({});
 
-    const vibeKeywords = deriveVibeKeywords(bodyForModel.travelers, bodyForModel.suggestions);
+    const origin = req.nextUrl.origin;
 
     json.destinations = await Promise.all(
       json.destinations.map(async (d: any, i: number) => {
@@ -785,28 +716,31 @@ export async function POST(req: NextRequest) {
             : undefined;
         const cleanedMarkers = normalizeMarkers(base.map_markers);
 
-        // imagery (prefer model's vacation_image_queries)
+        // imagery: prefer vacation_image_queries, then image_queries, then fallback
         let imageQueries: string[] | undefined = Array.isArray(base.vacation_image_queries)
           ? base.vacation_image_queries
           : Array.isArray(base.image_queries)
           ? base.image_queries
           : undefined;
 
-        imageQueries = imageQueries
-          ? imageQueries.map((s) => (typeof s === "string" ? s.trim() : "")).filter(Boolean).slice(0, 12)
+        imageQueries = Array.isArray(imageQueries)
+          ? imageQueries
+              .map((s: unknown) => (typeof s === "string" ? s.trim() : ""))
+              .filter(Boolean)
+              .slice(0, 16)
           : undefined;
 
         if (!imageQueries || imageQueries.length < 6) {
           const markerNames = (cleanedMarkers || []).map((m) => m.name);
-          imageQueries = fallbackImageQueries(name, markerNames, vibeKeywords);
+          imageQueries = fallbackImageQueries(name, markerNames);
         }
 
         // try to grab a small set of concrete image URLs server-side
-        const previewImages = await preloadImages(imageQueries || [], 4);
+        const previewImages = await preloadImages(origin, imageQueries || [], 4);
 
         const analysis = {
           suggested_month: base.suggested_month,
-          seasonal_warnings: base.seasonal_warnings,
+          seasonal_warnings: base.suggested_warnings ?? base.seasonal_warnings,
           satisfies: base.satisfies,
           analytics: base.analytics,
           map_center: mc,
@@ -819,7 +753,6 @@ export async function POST(req: NextRequest) {
           photos: Array.isArray(base.photos) ? base.photos.slice(0, 4) : undefined,
           photo_attribution:
             typeof base.photo_attribution === "string" ? base.photo_attribution : undefined,
-          image_vibes: vibeKeywords,
         };
 
         const narrative =
@@ -847,7 +780,7 @@ export async function POST(req: NextRequest) {
           photos: analysis.photos,
           photo_attribution: analysis.photo_attribution,
 
-          analysis, // store whole enriched object
+          analysis, // includes image query fields & preview_images
         };
       })
     );
@@ -934,8 +867,7 @@ export async function POST(req: NextRequest) {
       `[plan ${reqId}] image_queries counts=`,
       parsed.destinations.map((d) => ({
         slug: d.slug,
-        n: d.image_queries?.length || 0,
-        preview: (d as any)?.preview_images?.length || 0,
+        n: (d.vacation_image_queries || d.image_queries || []).length || 0,
       }))
     );
 
@@ -983,7 +915,7 @@ export async function POST(req: NextRequest) {
           toJsonb(d.months ?? []),
           toJsonb(d.per_traveler_fares),
           toJsonb(totals),
-          toJsonb(d), // includes vacation_image_queries, preview_images, photos, coords, etc.
+          toJsonb(d), // includes image_queries, vacation_image_queries, preview_images, coords, etc.
         ]
       );
     }
