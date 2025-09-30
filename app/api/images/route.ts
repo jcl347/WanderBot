@@ -1,205 +1,223 @@
 // app/api/images/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
-export const runtime = "edge";
-export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
-type Photo = {
-  id: string;
-  src: string;
-  width: number;
-  height: number;
-  alt?: string;
-};
+// Small helper: truncate long strings safely in logs
+const short = (s: string, n = 160) =>
+  (s || "").slice(0, n) + ((s || "").length > n ? " …[trunc]" : "");
 
-type Orientation = "portrait" | "landscape" | "any";
+// Parse "terms" from either GET query or POST body.
+// Supports: /api/images?terms=a&terms=b OR /api/images?terms=a,b OR POST {terms:[...] }
+async function parseInput(req: NextRequest) {
+  const url = new URL(req.url);
+  const fromQuery = url.searchParams.getAll("terms");
+  const csv = url.searchParams.get("q") || url.searchParams.get("csv");
+  let terms: string[] = [];
+  if (fromQuery.length) terms = fromQuery;
+  if (csv) terms.push(...String(csv).split(","));
+  terms = terms.map((t) => t.trim()).filter(Boolean);
 
-function ok(data: unknown, status = 200) {
-  return new NextResponse(JSON.stringify(data), {
-    status,
-    headers: {
-      "content-type": "application/json; charset=utf-8",
-      "Cache-Control":
-        "public, max-age=60, s-maxage=600, stale-while-revalidate=86400",
-    },
-  });
-}
-
-function parseJSONList(raw: string | null | undefined): string[] {
-  if (!raw) return [];
-  try {
-    const p = JSON.parse(raw);
-    if (Array.isArray(p)) {
-      return p
-        .map((x) => (typeof x === "string" ? x.trim() : ""))
-        .filter(Boolean);
-    }
-  } catch {}
-  return [];
-}
-
-function uniqBy<T>(arr: T[], key: (x: T) => string): T[] {
-  const seen = new Set<string>();
-  const out: T[] = [];
-  for (const a of arr) {
-    const k = key(a);
-    if (!seen.has(k)) {
-      seen.add(k);
-      out.push(a);
+  // POST body wins if present
+  if (req.method === "POST") {
+    try {
+      const body = await req.json();
+      if (Array.isArray(body?.terms)) {
+        terms = body.terms.map((t: unknown) =>
+          typeof t === "string" ? t.trim() : ""
+        ).filter(Boolean);
+      }
+    } catch {
+      // ignore
     }
   }
-  return out;
+
+  // de-dupe & cap
+  terms = Array.from(new Set(terms)).slice(0, 20);
+
+  // count (default 18), per term fetch is ceil(count/terms)
+  const countParam =
+    (req.method === "POST" ? undefined : url.searchParams.get("count")) ??
+    undefined;
+  const bodyCount =
+    req.method === "POST"
+      ? (() => {
+          try {
+            // will be re-parsed above if valid JSON; ignore errors
+            return undefined;
+          } catch {
+            return undefined;
+          }
+        })()
+      : undefined;
+
+  const count = Math.max(
+    1,
+    Math.min(
+      48,
+      Number(
+        (bodyCount as any) ??
+          countParam ??
+          (url.searchParams.get("limit") || 18)
+      ) || 18
+    )
+  );
+
+  return { terms, count };
 }
 
-// -------- Commons (primary) --------
-// IMPORTANT: use ii.thumburl if iiurlwidth is requested, otherwise ii.url
-async function searchCommons(term: string, pageSize: number): Promise<Photo[]> {
-  const u = new URL("https://commons.wikimedia.org/w/api.php");
-  u.searchParams.set("action", "query");
-  u.searchParams.set("format", "json");
-  u.searchParams.set("origin", "*");
-  u.searchParams.set("generator", "search");
-  u.searchParams.set("gsrsearch", term);
-  u.searchParams.set("gsrlimit", String(Math.min(20, Math.max(1, pageSize))));
-  u.searchParams.set("prop", "imageinfo");
-  u.searchParams.set("iiprop", "url|size|mime");
-  u.searchParams.set("iiurlwidth", "1280");
+type CommonsImage = {
+  src: string; // direct image (or thumb) url
+  width?: number | null;
+  height?: number | null;
+  title?: string | null;
+  page?: string | null;
+  author?: string | null;
+  license?: string | null;
+};
 
-  const res = await fetch(u.toString(), { next: { revalidate: 300 } });
-  if (!res.ok) throw new Error(`Commons ${res.status}`);
-  const json = await res.json();
+// Fetch from Wikimedia Commons using generator=search in File namespace (6).
+async function commonsSearch(term: string, limit: number): Promise<CommonsImage[]> {
+  // We ask Commons to render a sized thumbnail for speed; original URLs are also in extmetadata if needed.
+  // Notes:
+  //  - origin=* is required for CORS from browsers; harmless server-side.
+  //  - iiurlwidth picks a good rail size; tweak as desired.
+  const params = new URLSearchParams({
+    action: "query",
+    format: "json",
+    origin: "*",
+    generator: "search",
+    gsrsearch: term,
+    gsrlimit: String(limit),
+    gsrnamespace: "6", // File namespace
+    prop: "imageinfo|info",
+    inprop: "url",
+    iiprop: "url|extmetadata",
+    iiurlwidth: "1200",
+    uselang: "en",
+  });
 
-  const pages = json?.query?.pages;
-  if (!pages || typeof pages !== "object") return [];
+  const endpoint = `https://commons.wikimedia.org/w/api.php?${params.toString()}`;
+  const res = await fetch(endpoint, {
+    // Caching: let the Edge/CDN hold onto results a bit
+    headers: { "User-Agent": "trip-planner/1.0 (image prefetch)" },
+    next: { revalidate: 300 }, // 5 minutes
+  });
 
-  const photos: Photo[] = [];
+  if (!res.ok) {
+    const text = await res.text();
+    console.error("[/api/images] Commons fetch error:", res.status, short(text));
+    return [];
+  }
+
+  const json = await res.json().catch(() => ({} as any));
+  const pages = json?.query?.pages || {};
+  const out: CommonsImage[] = [];
+
   for (const key of Object.keys(pages)) {
     const p = pages[key];
     const ii = Array.isArray(p?.imageinfo) ? p.imageinfo[0] : null;
-    const thumburl: string | undefined = ii?.thumburl; // <— correct field
-    const url: string | undefined = ii?.url;
-    const src = thumburl || url;
-    const width = Number(ii?.thumbwidth || ii?.width) || 1024;
-    const height = Number(ii?.thumbheight || ii?.height) || 683;
-    if (!src) continue;
-    photos.push({
-      id: String(p?.pageid || src),
-      src,
+    const thumb = ii?.thumburl || ii?.url;
+    const width = Number(ii?.thumbwidth || ii?.width) || null;
+    const height = Number(ii?.thumbheight || ii?.height) || null;
+
+    // Filter to web-friendly formats (jpg/jpeg/png/webp)
+    const ok = typeof thumb === "string" && /\.(jpg|jpeg|png|webp)(\?|$)/i.test(thumb);
+    if (!ok) continue;
+
+    out.push({
+      src: thumb,
       width,
       height,
-      alt: typeof p?.title === "string" ? p.title : undefined,
+      title: typeof p?.title === "string" ? p.title : null,
+      page:
+        typeof p?.fullurl === "string"
+          ? p.fullurl
+          : `https://commons.wikimedia.org/wiki/${encodeURIComponent(
+              p?.title || ""
+            )}`,
+      author:
+        ii?.extmetadata?.Artist?.value
+          ?.replace(/<[^>]+>/g, "")
+          ?.trim() || null,
+      license:
+        ii?.extmetadata?.LicenseShortName?.value?.trim() ||
+        ii?.extmetadata?.License?.value?.trim() ||
+        null,
     });
   }
-  return photos;
+
+  return out;
 }
 
-// -------- Openverse (fallback) --------
-async function searchOpenverse(
-  term: string,
-  pageSize: number,
-  orientation: Orientation
-): Promise<Photo[]> {
-  const u = new URL("https://api.openverse.engineering/v1/images/");
-  u.searchParams.set("q", term);
-  u.searchParams.set("page_size", String(Math.min(20, Math.max(1, pageSize))));
-  if (orientation === "portrait") u.searchParams.set("aspect_ratio", "tall");
-  else if (orientation === "landscape") u.searchParams.set("aspect_ratio", "wide");
-  u.searchParams.set("license_type", "all");
-  u.searchParams.set("filter", "safe");
-
-  const res = await fetch(u.toString(), { next: { revalidate: 300 } });
-  if (!res.ok) throw new Error(`Openverse ${res.status}`);
-  const json = await res.json();
-  const arr = Array.isArray(json?.results) ? json.results : [];
-
-  return arr
-    .map((r: any) => {
-      const src: string | undefined = r?.thumbnail || r?.url;
-      const width: number = Number(r?.width) || 1024;
-      const height: number = Number(r?.height) || 683;
-      if (!src) return null;
-      return {
-        id: String(r?.id || src),
-        src,
-        width,
-        height,
-        alt: typeof r?.title === "string" ? r.title : undefined,
-      } as Photo;
-    })
-    .filter(Boolean);
+function jsonWithCache(payload: any, extraHeaders: Record<string, string> = {}) {
+  return NextResponse.json(payload, {
+    headers: {
+      // Cache a minute on client, 10m on CDN; allow SWR
+      "Cache-Control":
+        "public, max-age=60, s-maxage=600, stale-while-revalidate=86400",
+      ...extraHeaders,
+    },
+  });
 }
 
 export async function GET(req: NextRequest) {
-  try {
-    const { searchParams } = new URL(req.url);
-    const termsRaw = parseJSONList(searchParams.get("terms"));
-    const terms = uniqBy(
-      (termsRaw.length ? termsRaw : ["travel skyline city"]).map((t) => t.trim()),
-      (x) => x.toLowerCase()
-    ).slice(0, 14);
-    const count = Math.min(60, Math.max(8, Number(searchParams.get("count")) || 24));
-    const orientationParam = String(searchParams.get("side") || searchParams.get("orientation") || "portrait")
-      .toLowerCase();
-    const orientation: Orientation =
-      orientationParam === "landscape" ? "landscape" : orientationParam === "any" ? "any" : "portrait";
+  const reqId = Math.random().toString(36).slice(2, 8);
+  const { terms, count } = await parseInput(req);
 
-    const perTerm = Math.max(2, Math.ceil(count / Math.max(1, terms.length)));
-
-    // Commons first
-    const commonsSettled = await Promise.allSettled(
-      terms.map((t) => searchCommons(t, perTerm))
-    );
-    let photos = commonsSettled.flatMap((s) => (s.status === "fulfilled" ? s.value : []));
-
-    // Fallback if thin results
-    if (photos.length < Math.max(6, count / 2)) {
-      const ovSettled = await Promise.allSettled(
-        terms.map((t) => searchOpenverse(t, perTerm, orientation))
-      );
-      photos = photos.concat(
-        ovSettled.flatMap((s) => (s.status === "fulfilled" ? s.value : []))
-      );
-    }
-
-    const images = uniqBy(photos, (p) => p.src).slice(0, count);
-
-    if (!images.length) {
-      return ok([
-        {
-          id: "fallback",
-          src: "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6e/Skyline_placeholder.png/768px-Skyline_placeholder.png",
-          width: 768,
-          height: 512,
-          alt: "Travel",
-        },
-      ]);
-    }
-
-    return ok(images);
-  } catch (err: any) {
-    return ok({ error: err?.message || "Unexpected error" }, 500);
+  if (!terms.length) {
+    console.warn(`[images ${reqId}] No terms provided`);
+    return jsonWithCache({ images: [], debug: { reqId, terms, reason: "no-terms" } });
   }
-}
 
-export function HEAD() {
-  return new NextResponse(null, {
-    status: 200,
-    headers: {
-      "Cache-Control":
-        "public, max-age=60, s-maxage=600, stale-while-revalidate=86400",
+  const perTerm = Math.max(1, Math.ceil(count / terms.length));
+
+  console.log(`[images ${reqId}] terms=${JSON.stringify(terms)} count=${count} perTerm=${perTerm}`);
+
+  // Query all terms in parallel
+  const results = await Promise.all(
+    terms.map(async (t) => {
+      const imgs = await commonsSearch(t, perTerm);
+      console.log(
+        `[images ${reqId}] term="${t}" -> ${imgs.length} images (sample=${short(imgs[0]?.src || "", 96)})`
+      );
+      return imgs;
+    })
+  );
+
+  // Flatten, de-dupe by URL, trim to count
+  const flat = results.flat();
+  const seen = new Set<string>();
+  const images: CommonsImage[] = [];
+  for (const im of flat) {
+    if (!im?.src || seen.has(im.src)) continue;
+    seen.add(im.src);
+    images.push(im);
+    if (images.length >= count) break;
+  }
+
+  if (!images.length) {
+    console.warn(`[images ${reqId}] ZERO images returned for terms=${JSON.stringify(terms)}`);
+  }
+
+  return jsonWithCache({
+    reqId,
+    images,
+    debug: {
+      terms,
+      countRequested: count,
+      countReturned: images.length,
     },
   });
 }
 
-export function OPTIONS() {
-  return new NextResponse(null, {
-    status: 204,
-    headers: {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-      "Cache-Control":
-        "public, max-age=60, s-maxage=600, stale-while-revalidate=86400",
-    },
-  });
+export async function POST(req: NextRequest) {
+  // Delegate to GET logic after parsing body; this lets the client call POST safely.
+  const url = new URL(req.url);
+  const { terms, count } = await parseInput(req);
+  const qs = new URLSearchParams();
+  terms.forEach((t) => qs.append("terms", t));
+  qs.set("count", String(count));
+  // Re-call our own GET with normalized querystring. (We could inline, but reuse keeps behavior identical.)
+  return GET(new NextRequest(`${url.origin}${url.pathname}?${qs.toString()}`));
 }

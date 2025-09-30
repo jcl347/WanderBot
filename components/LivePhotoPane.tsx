@@ -1,149 +1,165 @@
-// components/LivePhotoPane.tsx
 "use client";
 
 import * as React from "react";
 import Image from "next/image";
+import clsx from "clsx";
 
-type Photo = {
-  id: string;
-  src: string;
-  width: number;
-  height: number;
-  alt?: string;
-};
-
+// Props: `orientation` is optional; we just use it for DOM attributes/classes
 type Props = {
-  /** Search terms to guide the images API */
   terms: string[];
-  /** Target number of images to show */
   count?: number;
-  /** Which rail is this? Affects orientation hint + sizes */
-  side?: "left" | "right";
-  /** Extra classes for the scroll container */
+  orientation?: "left" | "right";
   className?: string;
-  /** Optional seed photos to render immediately (server provided) */
-  initial?: Photo[];
 };
 
-const BLUR =
-  "data:image/svg+xml;charset=utf8," +
-  encodeURIComponent(
-    `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'><filter id='b'><feGaussianBlur stdDeviation='1.5' /></filter><rect width='10' height='10' fill='#e5f2ff' filter='url(#b)'/></svg>`
-  );
+type ApiImage = {
+  src: string;
+  width?: number | null;
+  height?: number | null;
+  title?: string | null;
+  page?: string | null;
+  author?: string | null;
+  license?: string | null;
+};
+
+function useImageSearch(terms: string[], count: number) {
+  const [images, setImages] = React.useState<ApiImage[]>([]);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const doFetch = async () => {
+      if (!terms?.length) {
+        setImages([]);
+        return;
+      }
+      setLoading(true);
+      setError(null);
+      try {
+        const qs = new URLSearchParams();
+        terms.forEach((t) => qs.append("terms", t));
+        qs.set("count", String(count));
+        const res = await fetch(`/api/images?${qs.toString()}`, {
+          method: "GET",
+          // Leverage the route's SWR caching
+          headers: { Accept: "application/json" },
+        });
+        const data = await res.json();
+        if (cancelled) return;
+
+        if (!res.ok) {
+          console.error("[LivePhotoPane] /api/images error:", data);
+          setError("Image API error");
+          setImages([]);
+          return;
+        }
+
+        const imgs: ApiImage[] = Array.isArray(data?.images) ? data.images : [];
+        console.log("[LivePhotoPane] terms=", terms, "returned=", imgs.length, "reqId=", data?.reqId);
+
+        // Preload top N to speed up first paint
+        const preload = imgs.slice(0, Math.min(6, imgs.length));
+        for (const im of preload) {
+          try {
+            // 1) <link rel="preload" as="image">
+            const link = document.createElement("link");
+            link.rel = "preload";
+            link.as = "image";
+            link.href = im.src;
+            document.head.appendChild(link);
+
+            // 2) JS warmup (fills HTTP cache even if link rel is ignored)
+            const i = new window.Image();
+            i.src = im.src;
+          } catch {}
+        }
+
+        setImages(imgs);
+      } catch (e: any) {
+        if (cancelled) return;
+        console.error("[LivePhotoPane] fetch threw:", e);
+        setError(e?.message || "Network error");
+        setImages([]);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    // Start during idle time if possible
+    // (we still run immediately if rIC isn't available)
+    if ("requestIdleCallback" in window) {
+      (window as any).requestIdleCallback(doFetch, { timeout: 1200 });
+    } else {
+      doFetch();
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [JSON.stringify(terms), count]);
+
+  return { images, loading, error };
+}
 
 export default function LivePhotoPane({
   terms,
-  count = 24,
-  side = "left",
+  count = 18,
+  orientation,
   className = "",
-  initial,
 }: Props) {
-  const [photos, setPhotos] = React.useState<Photo[] | null>(initial || null);
-  const [error, setError] = React.useState<string | null>(null);
+  const { images, loading, error } = useImageSearch(terms, count);
 
-  // Fetch (or refetch) images. We hint side for better aspect picks.
-  React.useEffect(() => {
-    const controller = new AbortController();
-    const run = async () => {
-      try {
-        const url = new URL("/api/images", window.location.origin);
-        url.searchParams.set("terms", JSON.stringify(terms.slice(0, 14)));
-        url.searchParams.set("count", String(count));
-        url.searchParams.set("side", side === "right" ? "landscape" : "portrait");
-
-        const res = await fetch(url.toString(), {
-          signal: controller.signal,
-          headers: { "cache-control": "max-age=60" },
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json: Photo[] = await res.json();
-        setPhotos((prev) => (prev && prev.length ? prev : json));
-        // Preload early items for instant paint
-        for (const p of json.slice(0, 6)) {
-          const img = new window.Image();
-          img.decoding = "async";
-          img.loading = "eager";
-          img.src = p.src;
-        }
-      } catch (e: any) {
-        if (e?.name !== "AbortError") setError(e?.message || "Failed to load images");
-      }
-    };
-    if (!initial || !initial.length) run();
-    return () => controller.abort();
-  }, [terms, count, side, initial]);
-
-  // “Rail” sizing: big cells with generous padding
-  const sizes =
-    side === "right"
-      ? "(min-width:1536px) 460px, (min-width:1280px) 420px, (min-width:1024px) 360px, 100vw"
-      : "(min-width:1536px) 460px, (min-width:1280px) 420px, (min-width:1024px) 360px, 100vw";
-
+  // Extra roomy layout so the rails feel “wide” and not cramped.
+  // Each tile uses a 4:5-ish portrait ratio, perfect for side rails.
   return (
     <aside
-      className={[
-        "rounded-2xl border bg-white/60 backdrop-blur sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto",
-        "shadow-sm hover:shadow-md transition-shadow",
-        "p-3",
-        className,
-      ].join(" ")}
-      aria-busy={!photos && !error}
+      data-orientation={orientation || "rail"}
+      className={clsx(
+        "rounded-2xl bg-white/70 backdrop-blur sticky top-20",
+        "p-3 md:p-3 border shadow-inner",
+        "min-h-[1400px] max-h-[calc(100vh-6rem)] overflow-y-auto",
+        className
+      )}
+      aria-busy={loading ? "true" : "false"}
     >
-      {!photos && !error && (
-        <div className="grid gap-3">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div
-              key={i}
-              className="h-56 rounded-xl bg-gradient-to-br from-sky-50 to-sky-100/60 animate-pulse"
-            />
-          ))}
+      <div className="grid grid-cols-1 gap-3">
+        {images.map((im, idx) => {
+          // First few are eager/priority to boost LCP for the side rails
+          const eager = idx < 2;
+          return (
+            <figure
+              key={im.src + "-" + idx}
+              className="relative w-full overflow-hidden rounded-xl border bg-white"
+              style={{ aspectRatio: "4 / 5" }} // stable layout to avoid CLS
+            >
+              <Image
+                src={im.src}
+                alt={im.title || "Photo"}
+                fill
+                sizes="(max-width: 1024px) 50vw, 320px"
+                className="object-cover"
+                priority={eager}
+                loading={eager ? "eager" : "lazy"}
+              />
+              {im.title && (
+                <figcaption className="absolute bottom-0 left-0 right-0 bg-white/70 text-[11px] px-2 py-1 line-clamp-1">
+                  {im.title}
+                </figcaption>
+              )}
+            </figure>
+          );
+        })}
+      </div>
+
+      {!images.length && !loading && !error && (
+        <div className="text-xs text-neutral-500 p-2">
+          No images found for: <span className="font-mono">{terms.join(", ")}</span>
         </div>
       )}
-
       {error && (
-        <div className="text-sm text-rose-700">
-          Couldn’t load photos. {error}
-        </div>
-      )}
-
-      {photos && (
-        <div className="grid gap-3">
-          {photos.map((p, i) => {
-            const eager = i < 4; // eager-load first few
-            const ratio = Math.max(1, p.width) / Math.max(1, p.height);
-            // keep tall feel on left, wide feel on right, but always big
-            const h =
-              side === "right"
-                ? Math.max(240, Math.min(420, Math.round(340 / Math.max(1, ratio))))
-                : Math.max(300, Math.min(520, Math.round(420 * (1 / Math.max(1, ratio)))));
-
-            return (
-              <figure key={p.id} className="rounded-xl overflow-hidden border bg-white/70">
-                <Image
-                  src={p.src}
-                  alt={p.alt || ""}
-                  width={p.width || 1200}
-                  height={p.height || 800}
-                  // Fill rail width with large visible images
-                  sizes={sizes}
-                  priority={eager}
-                  placeholder="blur"
-                  blurDataURL={BLUR}
-                  style={{
-                    width: "100%",
-                    height: `${h}px`,
-                    objectFit: "cover",
-                    display: "block",
-                  }}
-                />
-                {p.alt && (
-                  <figcaption className="px-3 py-2 text-xs text-neutral-700 line-clamp-2">
-                    {p.alt}
-                  </figcaption>
-                )}
-              </figure>
-            );
-          })}
+        <div className="text-xs text-red-600 p-2">
+          {error} — check server logs for /api/images.
         </div>
       )}
     </aside>
