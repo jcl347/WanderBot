@@ -14,10 +14,26 @@ const geistMono = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "Responses starter app",
-  description: "Starter app for the OpenAI Responses API",
-  icons: {
-    icon: "/openai_logo.svg",
+  title: {
+    default: "Wanderbot",
+    template: "%s · Wanderbot",
+  },
+  description:
+    "Wanderbot plans your trips with smart fares, gorgeous photo collages, and maps tailored to your crew.",
+  applicationName: "Wanderbot",
+  openGraph: {
+    title: "Wanderbot",
+    description:
+      "Plan smarter trips with airfare insights, curated images, and interactive maps.",
+    url: "/",
+    siteName: "Wanderbot",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Wanderbot",
+    description:
+      "Plan smarter trips with airfare insights, curated images, and interactive maps.",
   },
 };
 
