@@ -44,10 +44,7 @@ function smoothFareSeries(series: { month: string; avgUSD: number }[]) {
         ? sorted[(sorted.length / 2) | 0]
         : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
     if (Math.abs(x.avgUSD - med) / Math.max(1, med) > 0.7) {
-      return {
-        month: x.month,
-        avgUSD: Math.round(med * 0.85 + x.avgUSD * 0.15),
-      };
+      return { month: x.month, avgUSD: Math.round(med * 0.85 + x.avgUSD * 0.15) };
     }
     return x;
   });
@@ -57,46 +54,29 @@ function smoothFareSeries(series: { month: string; avgUSD: number }[]) {
 
 function fillAndSmoothMonths(raw: Fare[]): Fare[] {
   const set = new Set<string>();
-  for (const f of raw)
-    for (const m of f.monthBreakdown || [])
-      if (m?.month) set.add(m.month.slice(0, 7));
+  for (const f of raw) for (const m of f.monthBreakdown || []) if (m?.month) set.add(m.month.slice(0, 7));
   let months = Array.from(set).sort();
   if (months.length === 0) {
     const d = new Date();
     const a = new Date(d.getFullYear(), d.getMonth(), 1);
     const b = new Date(d.getFullYear(), d.getMonth() + 1, 1);
     const c = new Date(d.getFullYear(), d.getMonth() + 2, 1);
-    months = [a, b, c].map(
-      (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}`
-    );
+    months = [a, b, c].map((x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}`);
   }
 
   return raw.map((f) => {
     const mb = Array.isArray(f.monthBreakdown) ? [...f.monthBreakdown] : [];
-    const byKey = new Map(
-      mb.map((x) => [x.month.slice(0, 7), Number(x.avgUSD) || f.avgUSD || 0])
-    );
-    for (const m of months) {
-      if (!byKey.has(m)) mb.push({ month: m, avgUSD: f.avgUSD });
-    }
-    const smoothed = smoothFareSeries(
-      mb.map((x) => ({
-        month: x.month.slice(0, 7),
-        avgUSD: Number(x.avgUSD) || f.avgUSD || 0,
-      }))
-    );
-    const mean =
-      smoothed.reduce((a, x) => a + x.avgUSD, 0) /
-      Math.max(1, smoothed.length);
-    return {
-      ...f,
-      avgUSD: Math.round(mean),
-      monthBreakdown: smoothed,
-    };
+    const byKey = new Map(mb.map((x) => [x.month.slice(0, 7), Number(x.avgUSD) || f.avgUSD || 0]));
+    for (const m of months) if (!byKey.has(m)) mb.push({ month: m, avgUSD: f.avgUSD });
+    const smoothed = smoothFareSeries(mb.map((x) => ({
+      month: x.month.slice(0, 7),
+      avgUSD: Number(x.avgUSD) || f.avgUSD || 0,
+    })));
+    const mean = smoothed.reduce((a, x) => a + x.avgUSD, 0) / Math.max(1, smoothed.length);
+    return { ...f, avgUSD: Math.round(mean), monthBreakdown: smoothed };
   });
 }
 
-// Build vacation-y, city-anchored terms (uses model-provided terms if present)
 function buildCityTerms(dest: any, limit = 24) {
   const name: string = String(dest?.name || "").trim();
   const analysis = dest?.analysis ?? {};
@@ -110,8 +90,7 @@ function buildCityTerms(dest: any, limit = 24) {
     const cleaned = model
       .map((t: string) => {
         const one = t.replace(/\s+/g, " ").trim();
-        if (name && one.toLowerCase().startsWith(name.toLowerCase() + " "))
-          return one;
+        if (name && one.toLowerCase().startsWith(name.toLowerCase() + " ")) return one;
         return name ? `${name} ${one}` : one;
       })
       .filter(Boolean);
@@ -119,17 +98,8 @@ function buildCityTerms(dest: any, limit = 24) {
   }
 
   const basics = [
-    "sunset",
-    "rooftop pool",
-    "beach",
-    "waterfront",
-    "harbor",
-    "old town",
-    "market",
-    "street food",
-    "nightlife",
-    "viewpoint",
-    "promenade",
+    "mountain view", "ski village", "lodge", "hot springs", "alpine lake",
+    "gondola", "viewpoint", "downtown", "nightlife", "market",
   ].map((k) => (name ? `${name} ${k}` : k));
 
   return Array.from(new Set(basics)).slice(0, limit);
@@ -137,9 +107,7 @@ function buildCityTerms(dest: any, limit = 24) {
 
 export default function DestDetailClient({ dest }: { dest: any }) {
   const fares = React.useMemo(() => {
-    const raw: Fare[] = Array.isArray(dest?.per_traveler_fares)
-      ? dest.per_traveler_fares
-      : [];
+    const raw: Fare[] = Array.isArray(dest?.per_traveler_fares) ? dest.per_traveler_fares : [];
     return fillAndSmoothMonths(raw);
   }, [dest?.per_traveler_fares]);
 
@@ -148,14 +116,11 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     for (const f of fares) for (const m of f.monthBreakdown || []) s.add(m.month);
     const arr = Array.from(s).sort();
     if (arr.length) return arr;
-
     const d = new Date();
     const a = new Date(d.getFullYear(), d.getMonth(), 1);
     const b = new Date(d.getFullYear(), d.getMonth() + 1, 1);
     const c = new Date(d.getFullYear(), d.getMonth() + 2, 1);
-    return [a, b, c].map(
-      (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}`
-    );
+    return [a, b, c].map((x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}`);
   }, [fares]);
 
   const series = React.useMemo(() => {
@@ -163,42 +128,29 @@ export default function DestDetailClient({ dest }: { dest: any }) {
       const row: Record<string, number | string | null> = { month: m };
       for (const f of fares) {
         const found = f.monthBreakdown?.find((x) => x.month === m)?.avgUSD;
-        row[f.travelerName] = Number.isFinite(found as number)
-          ? (found as number)
-          : f.avgUSD ?? null;
+        row[f.travelerName] = Number.isFinite(found as number) ? (found as number) : f.avgUSD ?? null;
       }
       return row;
     });
   }, [months, fares]);
 
   const analysis = dest?.analysis ?? {};
-  const rawMarkers: Marker[] = Array.isArray(analysis.map_markers)
-    ? analysis.map_markers
-    : [];
-
+  const rawMarkers: Marker[] = Array.isArray(analysis.map_markers) ? analysis.map_markers : [];
   let pins =
     rawMarkers
       .map((m) => {
         const lat = Number(m?.position?.[0]);
         const lon = Number(m?.position?.[1]);
         if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-        return {
-          position: [lat, lon] as [number, number],
-          label: String(m?.name || dest?.name || "Pin"),
-        };
+        return { position: [lat, lon] as [number, number], label: String(m?.name || dest?.name || "Pin") };
       })
       .filter(Boolean) as { position: [number, number]; label: string }[];
-
   const mc = analysis.map_center ?? dest.map_center;
   const hasCenter = Number.isFinite(mc?.lat) && Number.isFinite(mc?.lon);
-  if (pins.length === 0 && hasCenter) {
-    pins = [{ position: [mc.lat, mc.lon], label: String(dest?.name || "Center") }];
-  }
-  const center: [number, number] | undefined = hasCenter
-    ? [mc.lat, mc.lon]
-    : pins[0]?.position;
+  if (pins.length === 0 && hasCenter) pins = [{ position: [mc.lat, mc.lon], label: String(dest?.name || "Center") }];
+  const center: [number, number] | undefined = hasCenter ? [mc.lat, mc.lon] : pins[0]?.position;
 
-  const simpleTerms = React.useMemo(() => buildCityTerms(dest, 24), [dest]);
+  const simpleTerms = React.useMemo(() => buildCityTerms(dest, 32), [dest]);
   const mid = Math.max(1, Math.ceil(simpleTerms.length / 2));
   const leftTerms = simpleTerms.slice(0, mid);
   const rightTerms = simpleTerms.slice(mid);
@@ -207,16 +159,14 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     <LiveCollage
       leftTerms={leftTerms}
       rightTerms={rightTerms}
-      railWidth={380}                 // roomy rails, but keeps focus on center
+      railWidth={360}                               // narrower rails
+      className="mx-auto max-w-[1600px] px-4 md:px-8" // much wider center
       railClassName="max-w-full"
-      className="max-w-[1200px] mx-auto px-4 md:px-6"  // wide, centered content
     >
       <div className="space-y-6">
         <SectionCard>
           <h1 className="text-3xl font-semibold">{dest.name}</h1>
-          <p className="text-neutral-700 whitespace-pre-line mt-3 text-lg leading-relaxed">
-            {dest.narrative}
-          </p>
+          <p className="text-neutral-700 whitespace-pre-line mt-3 text-lg leading-relaxed">{dest.narrative}</p>
         </SectionCard>
 
         <SectionCard>
@@ -225,8 +175,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
             <ul className="list-disc pl-6 text-sm">
               {dest.months.map((m: any) => (
                 <li key={m.month}>
-                  <span className="font-medium">{formatMonthYYYY(m.month)}:</span>{" "}
-                  {m.note}
+                  <span className="font-medium">{formatMonthYYYY(m.month)}:</span> {m.note}
                 </li>
               ))}
             </ul>
@@ -250,9 +199,7 @@ export default function DestDetailClient({ dest }: { dest: any }) {
               <MapLeaflet center={center} zoom={pins.length > 1 ? 11 : 8} markers={pins} />
             </div>
           ) : (
-            <div className="text-sm text-neutral-500">
-              No map data available for this destination.
-            </div>
+            <div className="text-sm text-neutral-500">No map data available for this destination.</div>
           )}
         </SectionCard>
 

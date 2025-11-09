@@ -1,19 +1,18 @@
 // components/LivePhotoPane.tsx
-// Masonary-style with varied pictures
 "use client";
 
 import * as React from "react";
 import Image from "next/image";
 
 type Img = { url: string; title?: string; source: "wikimedia" };
+
 type Props = {
   terms: string[];
-  count?: number;             // target images to show
+  count?: number;
   className?: string;
-  side?: "left" | "right";    // purely for aria/semantics
+  side?: "left" | "right";
 };
 
-/** Tiny hash to pick a stable variant per term (prevents layout jumpiness). */
 function hashToInt(s: string) {
   let h = 2166136261 >>> 0;
   for (let i = 0; i < s.length; i++) {
@@ -25,41 +24,49 @@ function hashToInt(s: string) {
 
 function pickVariant(term: string) {
   const n = hashToInt(term) % 100;
-  // ~50% square, 30% landscape, 20% portrait
-  if (n < 50) return "square" as const;
-  if (n < 80) return "landscape" as const;
-  return "portrait" as const;
+  if (n < 50) return "square" as const;    // 50%
+  if (n < 80) return "landscape" as const; // 30%
+  return "portrait" as const;              // 20%
 }
 
-export default function LivePhotoPane({ terms, count = 18, className, side = "left" }: Props) {
+async function fetchBatch(terms: string[], count: number, lenient = false): Promise<Img[]> {
+  const res = await fetch("/api/images", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    cache: "no-store",
+    body: JSON.stringify({
+      terms,
+      count,
+      source: "wikimedia",
+      // tell your route it's ok to relax filtering if needed
+      lenient,
+    }),
+  });
+  if (!res.ok) return [];
+  const json = await res.json();
+  const imgs = (Array.isArray(json?.images) ? json.images : []).filter((x: any) => x?.url) as Img[];
+  return imgs;
+}
+
+export default function LivePhotoPane({ terms, count = 36, className, side = "left" }: Props) {
   const [images, setImages] = React.useState<Img[]>([]);
 
   React.useEffect(() => {
     let cancelled = false;
+    const primary = terms.slice(0, 32);
 
     async function run() {
-      try {
-        // Ask our images API for a batch (Wikimedia-only)
-        const res = await fetch("/api/images", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          cache: "no-store",
-          body: JSON.stringify({
-            terms: terms.slice(0, 24),
-            count: Math.max(count, 18),
-            source: "wikimedia",
-          }),
-        });
-        if (!res.ok) return;
-        const json = await res.json();
-        const imgs = (Array.isArray(json?.images) ? json.images : [])
-          .filter((x: any) => x?.url)
-          .slice(0, Math.max(count, 18)) as Img[];
+      // 1) primary try
+      let imgs = await fetchBatch(primary, Math.max(24, count), false);
 
-        if (!cancelled) setImages(imgs);
-      } catch {
-        /* ignore */
+      // 2) fallback if too few → re-query with city-only simplified terms & lenient filter
+      if (!cancelled && imgs.length <= 8) {
+        const cityOnly = Array.from(new Set(primary.map((t) => t.split(" ")[0])).values()).slice(0, 6);
+        const more = await fetchBatch(cityOnly.length ? cityOnly : primary, Math.max(24, count), true);
+        if (more.length > imgs.length) imgs = more;
       }
+
+      if (!cancelled) setImages(imgs.slice(0, Math.max(24, count)));
     }
 
     run();
@@ -71,8 +78,10 @@ export default function LivePhotoPane({ terms, count = 18, className, side = "le
       aria-label={`${side} photo collage`}
       className={[
         "grid grid-flow-dense gap-3",
-        "grid-cols-2 sm:grid-cols-2 md:grid-cols-3",
-        "auto-rows-[8px]",                // base row height for masonry math
+        // more columns so many tiles appear at once
+        "grid-cols-2 sm:grid-cols-3 md:grid-cols-3",
+        // small base row → tight masonry
+        "auto-rows-[6px]",
         className || "",
       ].join(" ")}
     >
@@ -80,14 +89,13 @@ export default function LivePhotoPane({ terms, count = 18, className, side = "le
         const term = terms[i % Math.max(1, terms.length)] || "";
         const variant = pickVariant(term);
 
-        // Translate variant → grid spans + aspect ratio wrapper.
-        // Using auto-rows: 8px; so row-span approximates height.
+        // keep spans bounded to avoid a single enormous tile
         const spec =
           variant === "square"
-            ? { wrap: "aspect-square", col: "col-span-1", row: "row-span-[16]" } // ~128px
+            ? { wrap: "aspect-square", col: "col-span-1", row: "row-span-[22]" }     // ~132px
             : variant === "landscape"
-            ? { wrap: "aspect-[4/3]",    col: "col-span-2", row: "row-span-[16]" }
-            : { wrap: "aspect-[3/4]",    col: "col-span-1", row: "row-span-[20]" };
+            ? { wrap: "aspect-[4/3]",    col: "col-span-2", row: "row-span-[22]" }
+            : { wrap: "aspect-[3/4]",    col: "col-span-1", row: "row-span-[28]" }; // a bit taller
 
         return (
           <figure
@@ -105,10 +113,9 @@ export default function LivePhotoPane({ terms, count = 18, className, side = "le
                 src={img.url}
                 alt={img.title || "Travel photo"}
                 fill
-                sizes="(max-width: 640px) 45vw, (max-width: 1024px) 25vw, 18vw"
+                sizes="(max-width: 640px) 45vw, (max-width: 1024px) 28vw, 20vw"
                 className="object-cover"
-                // eager for first few, lazy for the rest
-                priority={i < 3}
+                priority={i < 4}
               />
             </div>
           </figure>
