@@ -1,10 +1,3 @@
-**╔══════════════════════════════════════════════════════════════╗
-║  W A N D E R B O T    •   plan smarter • see more • relax    ║
-╠══════════════════════════════════════════════════════════════╣
-║  Cities ▸ Fares ▸ Maps ▸ Photo Collages (Wikimedia Commons)  ║
-╚══════════════════════════════════════════════════════════════╝
-**
-
 <img width="1501" height="900" alt="image" src="https://github.com/user-attachments/assets/d069e526-e7ea-4ff9-8d01-60c452e732a2" />🌍 Wanderbot
 
 Plan beautiful, data-smart trips in minutes. Wanderbot blends airfare heuristics, curated photo collages, and interactive maps into a clean, shareable plan for your crew.
