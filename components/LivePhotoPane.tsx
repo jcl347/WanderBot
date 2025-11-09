@@ -12,17 +12,18 @@ type Img = {
 };
 
 type Props = {
-  /** Search terms to fetch photos for (already city-focused) */
+  /** Search terms (already city-centric) */
   terms: string[];
-  /** Rough target number of images (actual can be higher/lower) */
+  /** Rough target number of images */
   count?: number;
-  /** Which rail this is, for a11y */
+  /** For a11y labeling (optional) */
   side?: "left" | "right";
-  /** Extra classes on the outer <aside> */
+  /** Extra classes for outer container */
   className?: string;
 };
 
-/** Fetch images from our server endpoint with light dedupe. */
+/* ---------------- helpers ---------------- */
+
 async function fetchImages(terms: string[], count: number): Promise<Img[]> {
   if (!terms?.length) return [];
   try {
@@ -38,7 +39,7 @@ async function fetchImages(terms: string[], count: number): Promise<Img[]> {
     }
     const data = await res.json();
     const raw: Img[] = Array.isArray(data?.images) ? data.images : [];
-    // Deduplicate by URL
+    // dedupe by URL
     const seen = new Set<string>();
     const out: Img[] = [];
     for (const im of raw) {
@@ -53,35 +54,25 @@ async function fetchImages(terms: string[], count: number): Promise<Img[]> {
   }
 }
 
-/** Very simple "scenic" heuristic to bias natural landscapes larger. */
+/** lightweight “is it scenery?” heuristic */
 function scenicScore(img: Img): number {
   const t = (img.title || "").toLowerCase();
   const u = (img.url || "").toLowerCase();
-  const bonus = (s: string) =>
-    /\b(mountain|mountains|lake|beach|coast|coastal|ocean|sea|harbor|harbour|skyline|valley|forest|trail|park|scenic|panorama|view|overlook|national\s+park)\b/.test(
-      s
-    )
-      ? 1
-      : 0;
-
-  const penalty = (s: string) =>
-    /\b(document|scan|manuscript|logo|poster|flyer|pamphlet|map|flag|seal|diagram|chart|typography|newspaper|magazine)\b/.test(
-      s
-    )
-      ? 1
-      : 0;
-
-  return bonus(t) + bonus(u) - penalty(t) - penalty(u);
+  const plus =
+    /\b(mountain|lake|beach|coast|ocean|sea|harbor|valley|forest|park|trail|panorama|view|skyline|national\s+park|river|bay)\b/.test(
+      t
+    ) ||
+    /\b(mountain|lake|beach|coast|ocean|sea|harbor|valley|forest|park|trail|panorama|view|skyline|river|bay)\b/.test(
+      u
+    );
+  const minus =
+    /\b(document|scan|logo|poster|pamphlet|map|flag|seal|diagram|chart|newspaper|magazine)\b/.test(
+      t
+    ) || /\b(document|scan|logo|poster|pamphlet|map|flag|seal|diagram|chart)\b/.test(u);
+  return (plus ? 1 : 0) - (minus ? 1 : 0);
 }
 
-/** Assign a size class based on score rank (less tall overall). */
-function sizeClassFor(index: number, breaks: { tall: number; medium: number }) {
-  if (index < breaks.tall) return "h-44 md:h-52"; // scenic “hero”, not too tall
-  if (index < breaks.medium) return "h-32 md:h-40"; // mid tiles
-  return "h-24 md:h-28"; // small fillers
-}
-
-/** Small Fisher–Yates shuffle to avoid monotony among equal scores. */
+/** shuffle to avoid monotony among same scores */
 function shuffle<T>(arr: T[], rnd = Math.random): T[] {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
@@ -91,9 +82,11 @@ function shuffle<T>(arr: T[], rnd = Math.random): T[] {
   return a;
 }
 
+/* ---------------- component ---------------- */
+
 export default function LivePhotoPane({
   terms,
-  count = 36,
+  count = 28, // fewer, bigger tiles
   side = "left",
   className,
 }: Props) {
@@ -102,21 +95,20 @@ export default function LivePhotoPane({
   React.useEffect(() => {
     let alive = true;
     (async () => {
-      const fetched = await fetchImages(terms, Math.max(24, count));
+      const fetched = await fetchImages(terms, Math.max(18, count));
       if (!alive || !fetched.length) return;
 
-      // Sort by scenic score (desc) with a light shuffle among equals
+      // sort by scenic score, shuffle equals
       const scored = fetched.map((im) => ({ im, s: scenicScore(im) }));
-      const grouped = scored.reduce<Record<number, Img[]>>((acc, { im, s }) => {
-        acc[s] ||= [];
-        acc[s].push(im);
+      const buckets = scored.reduce<Record<number, Img[]>>((acc, { im, s }) => {
+        (acc[s] ||= []).push(im);
         return acc;
       }, {});
-      const scores = Object.keys(grouped)
+      const ranks = Object.keys(buckets)
         .map(Number)
         .sort((a, b) => b - a);
       const scenicFirst: Img[] = [];
-      for (const sc of scores) scenicFirst.push(...shuffle(grouped[sc]));
+      for (const r of ranks) scenicFirst.push(...shuffle(buckets[r]));
 
       setImages(scenicFirst);
     })();
@@ -125,52 +117,66 @@ export default function LivePhotoPane({
     };
   }, [JSON.stringify(terms), count]);
 
+  // We want 1–2 per row → use CSS grid with two columns on md+,
+  // single column on very small screens.
+  // Then vary height/shape by index, giving scenic-first items more area.
   const n = images.length;
-  // Fewer talls, more mediums: avoids “ski-slope” rails while keeping some heroes
-  const tallN = Math.max(4, Math.floor(n * 0.18));
-  const medN = Math.max(tallN + 6, Math.floor(n * 0.68)); // cumulative
-  const breaks = { tall: tallN, medium: medN };
+  const bigN = Math.max(4, Math.floor(n * 0.35)); // many larges to keep it bold
+  const medN = Math.max(bigN + 6, Math.floor(n * 0.75)); // cumulative middle band
 
   return (
     <aside
       aria-label={`${side} photo collage`}
       className={[
-        // More columns on xl to naturally shorten the perceived tile height
-        "columns-2 md:columns-3 xl:columns-4 gap-2 md:gap-3",
+        // 1 col on small, 2 col on md+ for large, bold tiles
+        "grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4",
         "opacity-95",
         className || "",
       ].join(" ")}
     >
       {images.map((img, i) => {
-        const baseH = sizeClassFor(i, breaks);
+        // size band
+        const band = i < bigN ? "big" : i < medN ? "med" : "sm";
 
-        // Shape jitter: some squares and 4:3 short wides to break vertical rhythm
-        const jitter =
-          i % 9 === 0
-            ? "aspect-[4/3] h-auto"
-            : i % 7 === 0
-            ? "aspect-square h-auto"
-            : "";
+        // shape variety (mix wides, squares, portrait)
+        // Keep overall heights generous; ensure not “too tall”.
+        const shape =
+          band === "big"
+            ? i % 3 === 0
+              ? "aspect-[16/10]" // wide scenic hero
+              : i % 3 === 1
+              ? "aspect-square"
+              : "aspect-[4/5]"
+            : band === "med"
+            ? i % 2 === 0
+              ? "aspect-[4/3]"
+              : "aspect-square"
+            : i % 3 === 0
+            ? "aspect-[5/4]"
+            : "aspect-square";
+
+        // height caps (so nothing becomes a skyscraper)
+        const height =
+          band === "big"
+            ? "max-h-[18rem] md:max-h-[22rem]"
+            : band === "med"
+            ? "max-h-[14rem] md:max-h-[17rem]"
+            : "max-h-[11rem] md:max-h-[13rem]";
 
         return (
           <figure
             key={`${img.url}-${i}`}
-            className="mb-2 md:mb-3 break-inside-avoid rounded-xl bg-white/60 ring-1 ring-black/5 shadow-sm overflow-hidden"
+            className="rounded-2xl bg-white/70 ring-1 ring-black/5 shadow-sm overflow-hidden"
             title={img.title || ""}
           >
-            <div className={`relative w-full ${jitter ? jitter : baseH}`}>
+            <div className={`relative w-full ${shape} ${height}`}>
               <Image
-                // When we use an aspect-* jitter, use intrinsic sizing not fill
-                fill={!jitter}
+                fill
                 src={img.url}
                 alt={img.title || "Travel photo"}
-                sizes={
-                  jitter
-                    ? "(max-width: 640px) 40vw, (max-width: 1024px) 28vw, 20vw"
-                    : "(max-width: 640px) 40vw, (max-width: 1024px) 28vw, 20vw"
-                }
-                className={jitter ? "w-full h-auto object-cover" : "object-cover"}
-                priority={i < 6}
+                sizes="(max-width: 768px) 90vw, 38vw"
+                className="object-cover"
+                priority={i < 4}
               />
             </div>
           </figure>
