@@ -17,7 +17,6 @@ __        __              _                 _           _
 ## Table of Contents
 - [✨ What it does](#-what-it-does)
 - [🧠 How it works](#-how-it-works)
-- [🖼️ Screens (concept)](#️-screens-concept)
 - [🧩 Tech Stack](#-tech-stack)
 - [🚀 Quickstart](#-quickstart)
 - [☁️ Deploy to Vercel](#️-deploy-to-vercel)
@@ -48,16 +47,6 @@ __        __              _                 _           _
 - **Image preload** → server calls **`/api/images`** (Wikimedia) for instant rails.
 - **Persistence** → `plans` + `destinations` in Postgres.
 - **Results UI** → thick center analytics, image rails left/right.
-
----
-
-## 🖼️ Screens (concept)
-
-| Home form | Results overview | Destination detail |
-|---|---|---|
-| ✏️ Travelers + timeframe | 📊 Cost chart + map + cards | 🗺️ Map, monthly notes, fare trend |
-
-> Tip: set `NEXT_PUBLIC_MOCK=1` to explore with demo data.
 
 ---
 
