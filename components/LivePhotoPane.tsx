@@ -1,4 +1,5 @@
 // components/LivePhotoPane.tsx
+// Masonary-style with varied pictures
 "use client";
 
 import * as React from "react";
