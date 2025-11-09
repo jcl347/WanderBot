@@ -1,33 +1,23 @@
-// components/LiveCollage.tsx
 "use client";
-
 import * as React from "react";
 import LivePhotoPane from "./LivePhotoPane";
 
-/**
- * Desktop (md+):   [ left rail | BIG center analytics | right rail ]
- * Mobile:          children only by default (optional bottom collage)
- */
 export default function LiveCollage({
   leftTerms = [],
   rightTerms = [],
   bottomTerms,
-  railWidth = 360,          // slightly slimmer rails so center can be thicker
-  centerMinWidth = 840,     // make the middle pane “thick”
+  railWidth = 360,
   children,
   className = "",
   railClassName = "",
-  showBottomOnMobile = false,
 }: {
   leftTerms?: string[];
   rightTerms?: string[];
   bottomTerms?: string[];
   railWidth?: number;
-  centerMinWidth?: number;
   children: React.ReactNode;
   className?: string;
   railClassName?: string;
-  showBottomOnMobile?: boolean;
 }) {
   const mergedBottom = React.useMemo(() => {
     const b =
@@ -39,18 +29,32 @@ export default function LiveCollage({
 
   return (
     <div className={className}>
+      {/* Mobile: content then a wide bottom collage */}
+      <div className="md:hidden space-y-4 px-4">
+        <div className="max-w-3xl mx-auto">{children}</div>
+        {mergedBottom.length > 0 && (
+          <LivePhotoPane
+            terms={mergedBottom}
+            count={16}
+            side="left"
+            className={`max-w-3xl mx-auto ${railClassName}`}
+          />
+        )}
+      </div>
+
+      {/* Desktop: perfectly centered 3-col grid */}
       <div
-        className="hidden md:grid gap-8"
+        className="hidden md:grid gap-6 max-w-[1600px] mx-auto px-6"
         style={{
-          gridTemplateColumns: `${railWidth}px minmax(${centerMinWidth}px, 1fr) ${railWidth}px`,
+          gridTemplateColumns: `${railWidth}px minmax(0,1fr) ${railWidth}px`,
         }}
       >
-        <div className="sticky top-20 self-start">
+        <div className="sticky top-24 self-start">
           {leftTerms.length > 0 && (
             <LivePhotoPane
               terms={leftTerms}
-              count={24}
-              columns={3}
+              count={18}
+              side="left"
               className={railClassName}
             />
           )}
@@ -58,23 +62,17 @@ export default function LiveCollage({
 
         <div className="min-w-0">{children}</div>
 
-        <div className="sticky top-20 self-start">
+        <div className="sticky top-24 self-start">
           {rightTerms.length > 0 && (
             <LivePhotoPane
               terms={rightTerms}
-              count={24}
-              columns={3}
+              count={18}
+              side="right"
               className={railClassName}
             />
           )}
         </div>
       </div>
-
-      {showBottomOnMobile && mergedBottom.length > 0 && (
-        <div className="md:hidden mt-6">
-          <LivePhotoPane terms={mergedBottom} count={16} columns={2} />
-        </div>
-      )}
     </div>
   );
 }

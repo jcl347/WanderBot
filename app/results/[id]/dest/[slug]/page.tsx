@@ -1,6 +1,5 @@
 // app/results/[id]/dest/[slug]/page.tsx
 import Link from "next/link";
-import Head from "next/head";
 import { notFound } from "next/navigation";
 import BackgroundMap from "@/components/BackgroundMap";
 import RobotBadge from "@/components/RobotBadge";
@@ -39,29 +38,27 @@ export default async function DestDetail({ params }: PageProps) {
 
   return (
     <BackgroundMap>
-      {/* Preconnect to the image CDNs we use so rails paint faster */}
-      <Head>
-        <link rel="dns-prefetch" href="https://upload.wikimedia.org" />
-        <link rel="preconnect" href="https://upload.wikimedia.org" crossOrigin="" />
-        <link rel="dns-prefetch" href="https://images.openverse.engineering" />
-        <link rel="preconnect" href="https://images.openverse.engineering" crossOrigin="" />
-      </Head>
-
-      {/* Top bar aligned to the same centered width as the content */}
-      <div className="mx-auto w-full max-w-[1320px] px-4 md:px-6">
-        <div className="flex items-center justify-between mb-2">
-          <RobotBadge />
-          <Link
-            href={`/results/${id}`}
-            className="text-sm text-sky-700 hover:underline"
-          >
-            &larr; Back to results
-          </Link>
+      {/* Sticky breadcrumb aligned to the same centered width as content */}
+      <div className="sticky top-16 z-30 bg-transparent">
+        <div className="mx-auto w-full max-w-[1200px] px-6">
+          <div className="flex items-center justify-between py-2">
+            <Link
+              href={`/results/${id}`}
+              className="inline-flex items-center gap-2 text-sm text-sky-700 hover:text-sky-800"
+            >
+              <span aria-hidden>←</span>
+              <span>Back to results</span>
+            </Link>
+            <RobotBadge />
+          </div>
         </div>
       </div>
 
-      {/* Client component renders center content + left/right image rails */}
-      <DestDetailClient dest={dest} />
+      {/* Main analytics content (DestDetailClient renders cards/charts) */}
+      <div className="mx-auto w-full max-w-[1200px] px-6">
+        <h1 className="sr-only">Destination details</h1>
+        <DestDetailClient dest={dest} />
+      </div>
     </BackgroundMap>
   );
 }
