@@ -4,7 +4,6 @@ Plan beautiful, data-smart trips in minutes. Wanderbot blends airfare heuristics
 
 Live demo: https://wander-bot-puce.vercel.app/
 
-<p align="center"> <img alt="Wanderbot hero" src="https://upload.wikimedia.org/wikipedia/commons/thumb/3/3d/Tokyo_Montage.jpg/640px-Tokyo_Montage.jpg" /> </p>
 ✨ What it does
 
 Group-aware trip planning – Input travelers (home city, preferences), a month window, and ideas.
