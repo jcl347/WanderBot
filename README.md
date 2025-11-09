@@ -1,75 +1,104 @@
-🌍 Wanderbot
+# 🌍 Wanderbot
 
-Plan beautiful, data-smart trips in minutes. Wanderbot blends airfare heuristics, curated photo collages, and interactive maps into a clean, shareable plan for your crew.
+> Plan beautiful, data-smart trips in minutes. Wanderbot blends airfare heuristics, curated photo collages, and interactive maps into a clean, shareable plan for your crew.
 
-Live demo: https://wander-bot-puce.vercel.app/
+**Live demo:** https://wander-bot-puce.vercel.app/
 
-✨ What it does
+```
+__        __              _                 _           _   
+\ \      / /__  _ _   __| | ___  _ _  ___ | |__  _  _ | |_ 
+ \ \ /\ / // _ \| ' \ / _` |/ _ \| '_|/ -_)| '_ \| || ||  _|
+  \_/\_/ \_\___/|_||_|\__,_|\___/|_|  \___||_.__/ \_,_| \__|
+                   plan trips that feel good and make sense
+```
 
-Group-aware trip planning – Input travelers (home city, preferences), a month window, and ideas.
+---
 
-Smart fare estimates – Heuristic monthly averages by traveler (short/medium/long-haul bands, competition, seasonality).
+## Table of Contents
+- [✨ What it does](#-what-it-does)
+- [🧠 How it works](#-how-it-works)
+- [🖼️ Screens (concept)](#️-screens-concept)
+- [🧩 Tech Stack](#-tech-stack)
+- [🚀 Quickstart](#-quickstart)
+- [☁️ Deploy to Vercel](#️-deploy-to-vercel)
+- [🛣️ Key Endpoints](#️-key-endpoints)
+- [🧱 Important Files](#-important-files)
+- [🔍 Image Strategy](#-image-strategy)
+- [⚙️ Configuration Notes](#️-configuration-notes)
+- [🧪 Troubleshooting](#-troubleshooting)
+- [🗺️ Roadmap](#️-roadmap)
+- [🤝 Contributing](#-contributing)
+- [📄 License](#-license)
 
-Photo collages that inspire
+---
 
-Interactive maps – Auto-placed pins and centers per destination.
+## ✨ What it does
+- **Group-aware trip planning** — travelers, timeframe, preferences.
+- **Smart fare estimates** — heuristic monthly averages per traveler.
+- **Photo collages** — city-centric Wikimedia rails that inspire.
+- **Interactive maps** — auto pins and sensible map centers.
+- **Clear cost comparisons** — per-person and group totals.
+- **Production-ready** — normalized JSON, Postgres, Zod-validated.
 
-Clear cost comparisons – Per-person and group totals you can act on.
+---
 
-Production-friendly outputs – Normalized JSON, Postgres persistence, Zod-validated schema.
+## 🧠 How it works
+- **`/api/plan`** → model returns **5 destinations** (strict JSON).
+- **Normalization** → smooth fares, fill months, clean markers, expand notes.
+- **Image preload** → server calls **`/api/images`** (Wikimedia) for instant rails.
+- **Persistence** → `plans` + `destinations` in Postgres.
+- **Results UI** → thick center analytics, image rails left/right.
 
-🧠 How it works (high level)
+---
 
-/api/plan – Takes your group + timeframe → asks the model for 5 destinations (strict JSON), including fares, highlights, map pins, and image search terms.
+## 🖼️ Screens (concept)
 
-Normalization – Cleans/smooths fare curves, fills missing months, normalizes map markers, expands monthly notes.
+| Home form | Results overview | Destination detail |
+|---|---|---|
+| ✏️ Travelers + timeframe | 📊 Cost chart + map + cards | 🗺️ Map, monthly notes, fare trend |
 
-Image preload – Server fetches preview photos from Wikimedia via /api/images so the UI loads instantly.
+> Tip: set `NEXT_PUBLIC_MOCK=1` to explore with demo data.
 
-Persistence – Saves the plan and destination details to Postgres (plans, destinations).
+---
 
-Results UI – Shows a thick, center analytics pane (charts, notes, tables) with photo collages on both sides.
+## 🧩 Tech Stack
+- **Next.js 15 (App Router)** + **TypeScript**
+- **OpenAI** Chat/Responses (configurable model)
+- **Postgres** (SQL helper `q`)
+- **Zod** (strict validation)
+- **Leaflet** maps
+- **Wikimedia Commons** images (`/api/images`)
+- **Tailwind** UI
 
-🖼️ Screens (concept)
+---
 
+## 🚀 Quickstart
 
-	
-🧩 Tech Stack
-
-Next.js 15 (App Router) + TypeScript
-
-OpenAI Responses / Chat Completions (configurable model)
-
-Postgres (SQL helper via q)
-
-Zod (strict runtime validation)
-
-Leaflet maps
-
-Wikimedia Commons images (via custom /api/images)
-
-Tailwind UI vibes (clean cards, spacious grid, balanced typography)
-
-🚀 Quickstart
-1) Clone & install
+### 1) Clone & install
+```bash
 git clone https://github.com/yourname/wanderbot.git
 cd wanderbot
 npm i
+```
 
-2) Environment variables
+### 2) Environment variables
+Create a **`.env.local`** file at the project root:
 
-Create .env.local:
-
+```dotenv
 # OpenAI
-OPENAI_API_KEY=sk-...
+OPENAI_API_KEY=sk-***
 OPENAI_MODEL=gpt-4.1
 
-# Database
+# Database (Postgres)
 DATABASE_URL=postgres://USER:PASSWORD@HOST:5432/DB
 
+# App
+NEXT_PUBLIC_BASE_URL=http://localhost:3000
+NEXT_PUBLIC_MOCK=0
+```
 
-
-3) DB tables (minimal)
+### 3) Database (minimal schema)
+```sql
 -- plans
 create table if not exists plans (
   id uuid default gen_random_uuid() primary key,
@@ -96,94 +125,179 @@ create table if not exists destinations (
   totals jsonb,
   analysis jsonb
 );
+```
 
-4) Run dev
+### 4) Run locally
+```bash
 npm run dev
+# open http://localhost:3000
+```
 
+---
 
+## ☁️ Deploy to Vercel
 
-🛣️ Key endpoints
-POST /api/plan
+### A) Project setup
+1. **New Project → Import GitHub Repo** in Vercel.
+2. **Framework Preset:** Next.js (auto-detected).
+3. **Environment Variables** (Production + Preview):
+   - `OPENAI_API_KEY`
+   - `OPENAI_MODEL` (e.g., `gpt-4.1`)
+   - `DATABASE_URL`
+   - `NEXT_PUBLIC_BASE_URL` → your prod URL (e.g., `https://your-app.vercel.app`)
+   - `NEXT_PUBLIC_MOCK` → `0`
+4. **Build**: defaults are fine for Next 15.
 
-Input: { travelers: [...], timeframe: { startMonth, endMonth }, suggestions? }
+### B) Postgres options
+Use Neon, Supabase, or Vercel Postgres. Ensure your connection string works in serverless.
 
-Output: { planId }
+### C) Image hosts on Vercel
+Wikimedia hosts are whitelisted in `next.config.mjs` (see below).
 
-Side effects: saves plan + 5 destinations.
+### D) Production URL back-reference
+Set `NEXT_PUBLIC_BASE_URL` to the **exact** deployed origin (no trailing `/`).  
+Server-side image preload in `/api/plan` calls `/api/images` using this value.
 
-POST /api/images
+---
 
-Input: { terms: string[], count?: number }
+## 🛣️ Key Endpoints
 
-Output: { images: Array<{ url, title?, source: "wikimedia" }> }
+**POST `/api/plan`**
+```json
+{
+  "travelers": [{ "id": "t1", "name": "Alex", "homeLocation": "Seattle" }],
+  "timeframe": { "startMonth": "2026-02", "endMonth": "2026-05" },
+  "suggestions": "beach, food, museums"
+}
+```
+→
+```json
+{ "planId": "uuid..." }
+```
 
-Uses Wikimedia’s image search with light filtering and returns preload-friendly URLs.
+**POST `/api/images`**
+```json
+{ "terms": ["Barcelona beach", "Barcelona Gothic Quarter"], "count": 12 }
+```
+→
+```json
+{ "images": [{ "url": "...", "title": "...", "source": "wikimedia" }] }
+```
 
-🧱 Important files
+---
+
+## 🧱 Important Files
+```
 app/
   api/
-    plan/route.ts         # model prompt, normalization, persistence, image preload
-    images/route.ts       # Wikimedia fetch + filtering
-  results/[id]/page.tsx   # summary, charts, map, destination cards
+    plan/route.ts          # prompt, normalization, persistence, image preload
+    images/route.ts        # Wikimedia fetch + filtering
+  results/[id]/page.tsx    # summary, charts, map, destination cards
   results/[id]/dest/[slug]/page.tsx  # detail analytics page
 
 components/
-  LivePhotoPane.tsx       # left/right collages
-  LiveCollage.tsx         # responsive rails + wide center
-  DestDetailClient.tsx    # charts, notes, map, tables
-  DestinationCard.tsx     # destination teaser cards
+  LivePhotoPane.tsx        # left/right collages (vacationy, landmark-centric)
+  LiveCollage.tsx          # responsive rails + wide center
+  DestDetailClient.tsx     # charts, notes, map, tables (no inline photos)
+  DestinationCard.tsx      # destination teaser cards
   MapLeaflet.tsx, MonthLine.tsx, SectionCard.tsx, BackgroundMap.tsx
 
 lib/
-  db.ts                   # SQL helper (q)
+  db.ts                    # SQL helper (q)
 
-🔍 Image strategy (vacation-focused)
+app/layout.tsx             # site metadata (title/description)
+next.config.mjs            # remote image hosts (Wikimedia)
+```
 
-LLM generates city-anchored image terms (e.g., “Barcelona Gothic Quarter”, “Barcelona tapas bar”, “Barcelona beach sunset”), keeping queries short & location-centric.
+---
 
-Server preloads a handful of images per destination so the rails feel instant.
+## 🔍 Image Strategy
+- Short, **city-anchored** queries (e.g., `Tokyo Shibuya`, `Lisbon Alfama`, `Barcelona beach`).
+- Server-side preload for a handful per destination (faster initial paint).
+- Filter non-photos via Wikimedia metadata (exclude categories like documents, logos, flags, maps).
+- `next/image` handles responsive optimization; Wikimedia hosts are whitelisted.
 
-Filtering removes non-photo content (scans Wikimedia metadata for categories like portrait, document, logo, map, flag, seal, etc.).
+---
 
-Next/Image handles responsive layout & caching; Next config whitelists Wikimedia hosts.
+## ⚙️ Configuration Notes
 
-⚙️ Configuration notes
-
-Change the site title in app/layout.tsx metadata:
-
+**`app/layout.tsx`**
+```ts
 export const metadata = {
   title: { default: "Wanderbot", template: "%s · Wanderbot" },
   description: "Plan smarter trips with airfare insights and gorgeous collages.",
 };
+```
 
+**`next.config.mjs`** (remote image hosts)
+```js
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true,
+  images: {
+    remotePatterns: [
+      { protocol: "https", hostname: "upload.wikimedia.org" },
+      { protocol: "https", hostname: "commons.wikimedia.org" }
+    ],
+  },
+  experimental: { optimizeCss: false },
+  headers: async () => [
+    {
+      source: "/api/images",
+      headers: [
+        {
+          key: "Cache-Control",
+          value: "public, max-age=60, s-maxage=600, stale-while-revalidate=86400",
+        },
+      ],
+    },
+  ],
+};
 
-Remote image hosts are configured in next.config.mjs (Wikimedia, Openverse optional).
+export default nextConfig;
+```
 
-You can use NEXT_PUBLIC_MOCK=1 to drive demo/mock content while testing the UI.
+---
 
-🗺️ Roadmap
+## 🧪 Troubleshooting
 
-✈️ Real fare integrations by origin airport (optionally cache)
+- **No images / 401 from `/api/images`**
+  - Ensure `NEXT_PUBLIC_BASE_URL` matches your deployed URL (e.g., `https://your-app.vercel.app`).
+  - Confirm `next.config.mjs` includes Wikimedia `remotePatterns`.
+  - In Vercel: set env vars for **Production** and **Preview**.
 
-🧭 Day-by-day micro-itineraries with time blocks
+- **405 on `/api/images`**
+  - Client method mismatch. This repo expects `POST` for `/api/images`.
 
-🧪 A/B variants for image term strategies
+- **Slow first load of rails**
+  - Preload uses server fetch + caching headers; verify they’re present (see config above).
+  - Reduce preload `count` if bandwidth constrained.
 
-🧑‍🤝‍🧑 Collab links + “share this plan” mode
+- **“This page could not be found” after form submission**
+  - Verify `app/results/[id]/page.tsx` exists and client routes to `/results/${planId}`.
 
-📦 Export to PDF / Notion
+- **TypeScript prop errors**
+  - Ensure `LivePhotoPane` props match usage (`terms`, `count`, optional `side`/`orientation`, `className`).
+  - Update all call sites when refactoring prop names.
 
-🤝 Contributing
+---
 
-PRs welcome! Please:
+## 🗺️ Roadmap
+- ✈️ Real fare integrations by origin airport
+- 🧭 Day-by-day micro-itineraries
+- 🧪 Image-term strategy A/Bs
+- 🧑‍🤝‍🧑 Share/collab mode
+- 📦 Export (PDF / Notion)
 
-Validate all API inputs/outputs with Zod.
+---
 
-Favor server-side preloading for anything expensive.
+## 🤝 Contributing
+PRs welcome. Please:
+- Validate inputs/outputs with Zod.
+- Prefer server-side preloading for expensive operations.
+- Keep the UI airy, readable, and photo-forward.
 
-📄 License
+---
 
+## 📄 License
 MIT © Wanderbot
-
-Build delightful, decisive travel planning.
-Questions or ideas? Open an issue in the repo or reach out via the demo site.
