@@ -1,4 +1,5 @@
 // components/LiveCollage.tsx
+// Fluid style
 "use client";
 
 import * as React from "react";
