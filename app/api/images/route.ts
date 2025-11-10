@@ -1,91 +1,168 @@
 // app/api/images/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
-type Img = { url: string; title?: string; source: "wikimedia" };
+export const runtime = "nodejs";
+// Make sure this isn't statically cached at build time
+export const dynamic = "force-dynamic";
 
-const BLOCK_KEYWORDS = [
-  "book","cover","manuscript","folio","page","leaf","scan","document","title page",
-  "newspaper","periodical","magazine","catalog","poster","advertisement","label",
-  "map","chart","seal","coat of arms","emblem","flag","logo","ticket","stamp",
-  "pamphlet","certificate","receipt","brochure","blueprint","plan","drawing"
-];
+type Img = {
+  url: string;
+  title?: string;
+  source: "wikimedia";
+};
 
-function looksDocumentLike(s: string) {
-  const t = s.toLowerCase();
-  return BLOCK_KEYWORDS.some(k => t.includes(k));
-}
-function isOkMime(m?: string) {
-  if (!m) return true;
-  if (!m.startsWith("image/")) return false;
-  if (m.includes("svg")) return false;
-  return true;
-}
-function aspectScore(w: number, h: number) {
-  // prefer natural photo ranges (portrait/landscape up to ~2:1)
-  if (!w || !h) return 0;
-  const r = w / h;
-  if (r < 0.5 || r > 2.2) return 0.2;
-  if (r > 0.75 && r < 1.6) return 1.0;
-  return 0.8;
+// -------------- tiny helpers --------------
+function parseTerms(q?: string, termsRaw?: unknown): string[] {
+  const out: string[] = [];
+  if (Array.isArray(termsRaw)) {
+    for (const t of termsRaw) if (typeof t === "string" && t.trim()) out.push(t.trim());
+  }
+  if (typeof q === "string" && q.trim()) {
+    for (const t of q.split(",").map((s) => s.trim())) if (t) out.push(t);
+  }
+  // keep unique & sane length
+  return Array.from(new Set(out)).slice(0, 12);
 }
 
-export async function POST(req: NextRequest) {
+function dedupeKeepFirst(images: Img[], limit: number): Img[] {
+  const seen = new Set<string>();
+  const out: Img[] = [];
+  for (const im of images) {
+    const key = im.url;
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(im);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function json(data: unknown, status = 200, preloadLinks?: string[]): NextResponse {
+  const headers: Record<string, string> = {
+    "content-type": "application/json; charset=utf-8",
+    "Cache-Control": "public, max-age=60, s-maxage=600, stale-while-revalidate=86400",
+  };
+  if (preloadLinks && preloadLinks.length) {
+    // Multiple Link headers are allowed; combine as a single comma-separated header.
+    headers["Link"] = preloadLinks.map((u) => `<${u}>; rel=preload; as=image; crossorigin`).join(", ");
+  }
+  return new NextResponse(JSON.stringify(data), { status, headers });
+}
+
+// -------------- Wikimedia-only fetch --------------
+/**
+ * Fetch photos from Wikimedia Commons Files namespace for a single term.
+ * We request 1280px thumbnails for good balance of quality/weight.
+ */
+async function fetchWikimedia(term: string, limit: number): Promise<Img[]> {
+  if (!term) return [];
+  const params = new URLSearchParams({
+    action: "query",
+    format: "json",
+    prop: "imageinfo",
+    generator: "search",
+    gsrnamespace: "6", // File namespace
+    gsrsearch: term,
+    gsrlimit: String(Math.min(50, Math.max(5, limit))),
+    iiprop: "url|mime|size",
+    iiurlwidth: "1280",
+    uselang: "en",
+    origin: "*",
+  });
+
+  const url = `https://commons.wikimedia.org/w/api.php?${params.toString()}`;
+
   try {
-    const body = await req.json();
-    const terms: string[] = Array.isArray(body?.terms) ? body.terms : [];
-    const count = Math.min(80, Math.max(12, Number(body?.count) || 40)); // fetch plenty, filter down
+    const res = await fetch(url, { next: { revalidate: 600 } });
+    if (!res.ok) return [];
+    const data: any = await res.json();
+    const pages: Record<string, any> = data?.query?.pages || {};
 
-    if (!terms.length) {
-      return NextResponse.json({ images: [] });
+    // Build output without nulls
+    const out: Img[] = [];
+    for (const p of Object.values(pages) as any[]) {
+      const ii = Array.isArray(p?.imageinfo) ? p.imageinfo[0] : null;
+      const link = typeof ii?.thumburl === "string" ? ii.thumburl : (typeof ii?.url === "string" ? ii.url : "");
+      if (!link) continue;
+
+      // Prefer larger thumbs when provided
+      out.push({
+        url: link,
+        title: typeof p?.title === "string" ? p.title : undefined,
+        source: "wikimedia",
+      });
     }
-
-    // Query Wikimedia: generator=search and prop=imageinfo&extmetadata for URLs + sizes
-    const search = encodeURIComponent(terms.join(" | "));
-    const url =
-      `https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*&` +
-      `generator=search&gsrsearch=${search}&gsrlimit=${count}&` +
-      `prop=imageinfo|info|categories&inprop=url&` +
-      `iiprop=url|mime|size|extmetadata&iiurlwidth=2000&iiurlheight=2000&cllimit=20`;
-
-    const res = await fetch(url, { cache: "no-store" });
-    if (!res.ok) return NextResponse.json({ images: [] }, { status: 200 });
-
-    const data = await res.json();
-    const pages = data?.query?.pages ? Object.values<any>(data.query.pages) : [];
-
-    const imgs: Img[] = pages
-      .map((p: any) => {
-        const title: string = p?.title || "";
-        const cats: string[] = (p?.categories || []).map((c: any) => c?.title || "");
-        const ii = Array.isArray(p?.imageinfo) ? p.imageinfo[0] : null;
-        const url = ii?.thumburl || ii?.url;
-        const mime: string | undefined = ii?.mime;
-        const w: number = ii?.thumbwidth || ii?.width || 0;
-        const h: number = ii?.thumbheight || ii?.height || 0;
-
-        if (!url || !isOkMime(mime)) return null;
-
-        // BLOCK by obvious doc signals first
-        const joined = `${title} ${cats.join(" ")}`;
-        if (looksDocumentLike(joined)) return null;
-
-        // Basic dimension bar: prefer decent sized images
-        if (w < 640 || h < 480) return null;
-
-        // Guard against scans of extremely tall pages or super-wide strips
-        const aScore = aspectScore(w, h);
-        if (aScore < 0.3) return null;
-
-        return { url, title, source: "wikimedia" as const };
-      })
-      .filter(Boolean) as Img[];
-
-    // If filtering was very strict, fall back to first N safe mimetypes
-    const unique = Array.from(new Map(imgs.map(i => [i.url, i])).values());
-    return NextResponse.json({ images: unique.slice(0, count) });
-  } catch (e) {
-    return NextResponse.json({ images: [] }, { status: 200 });
+    return out.slice(0, limit);
+  } catch {
+    return [];
   }
 }
 
-export const runtime = "edge";
+// -------------- orchestrator --------------
+/**
+ * Query Wikimedia for each term (capped), flatten, dedupe, and trim.
+ * For “vacation vibe” relevance while staying Wikimedia-only, we expand each base term
+ * into a few scenic variants (beach, sunset, skyline). You can remove/adjust if undesired.
+ */
+function expandVacationFlairs(terms: string[]): string[] {
+  const flairs = ["beach", "sunset", "skyline", "harbor", "old town", "coastline", "viewpoint", "market"];
+  const out: string[] = [];
+  for (const t of terms) {
+    const base = t.trim();
+    if (!base) continue;
+    out.push(base);
+    for (const f of flairs) out.push(`${base} ${f}`);
+  }
+  // avoid overly huge queries
+  return Array.from(new Set(out)).slice(0, 24);
+}
+
+async function searchWikimediaOnly(terms: string[], count: number): Promise<Img[]> {
+  const expanded = expandVacationFlairs(terms);
+  const perTerm = Math.max(4, Math.ceil(count / Math.max(1, Math.min(expanded.length, 8))));
+
+  const batches = expanded.slice(0, 8).map((t) => fetchWikimedia(t, perTerm));
+  const chunks = await Promise.all(batches);
+  const flat = chunks.flat();
+  // Deduplicate and cap count
+  return dedupeKeepFirst(flat, Math.max(3, Math.min(60, count)));
+}
+
+// -------------- handlers --------------
+export async function GET(req: NextRequest) {
+  const { searchParams } = req.nextUrl;
+  const q = searchParams.get("q") || undefined;
+  const count = Number(searchParams.get("count") || "24");
+  const preload = Number(searchParams.get("preload") || "8"); // how many to send as Link: preload
+
+  const terms = parseTerms(q, undefined);
+  if (!terms.length) return json({ images: [] }, 200);
+
+  const images = await searchWikimediaOnly(terms, count);
+  // Preload first few in the browser via Link header
+  const preloadLinks = images.slice(0, Math.max(0, Math.min(preload, images.length))).map((im) => im.url);
+
+  console.log("[/api/images GET] terms=", terms, " ->", images.length, "images");
+  return json({ images }, 200, preloadLinks);
+}
+
+export async function POST(req: NextRequest) {
+  let body: any = {};
+  try {
+    body = await req.json();
+  } catch {
+    // ignore parse errors; treat as empty
+  }
+  const q = typeof body?.q === "string" ? body.q : undefined;
+  const count = Number(body?.count ?? 24) || 24;
+  const preload = Number(body?.preload ?? 0) || 0; // POST is usually server-to-server; preload headers optional
+  const terms = parseTerms(q, body?.terms);
+
+  if (!terms.length) return json({ images: [] }, 200);
+
+  const images = await searchWikimediaOnly(terms, count);
+  const preloadLinks = preload ? images.slice(0, Math.min(preload, images.length)).map((im) => im.url) : undefined;
+
+  console.log("[/api/images POST] terms=", terms, " ->", images.length, "images");
+  return json({ images }, 200, preloadLinks);
+}
