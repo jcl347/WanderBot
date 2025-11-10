@@ -96,8 +96,7 @@ function fillAndSmoothMonths(raw: Fare[]): Fare[] {
   });
 }
 
-// Build vacation-y, city-anchored terms (uses model-provided terms if present)
-function buildCityTerms(dest: any, limit = 24) {
+function buildCityTerms(dest: any, limit = 16) {
   const name: string = String(dest?.name || "").trim();
   const analysis = dest?.analysis ?? {};
   const model: string[] = Array.isArray(analysis.vacation_image_queries)
@@ -207,9 +206,10 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     <LiveCollage
       leftTerms={leftTerms}
       rightTerms={rightTerms}
-      railWidth={380}                 // roomy rails, but keeps focus on center
+      railWidth={475} // roomy rails so images are easy to see
       railClassName="max-w-full"
-      className="max-w-[1200px] mx-auto px-4 md:px-6"  // wide, centered content
+      className="md:px-0"
+      showBottomOnMobile={false}
     >
       <div className="space-y-6">
         <SectionCard>

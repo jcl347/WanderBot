@@ -1,89 +1,34 @@
+// components/LivePhotoPane.tsx
 "use client";
-
 import * as React from "react";
 import Image from "next/image";
 
-type Img = { url: string; title?: string; source: "wikimedia" };
-
+// If you previously exported a Props type, update it in place.
+// Otherwise define it here:
 type Props = {
   terms: string[];
   count?: number;
   className?: string;
+  /** which rail this pane sits on (used for subtle layout tweaks) */
   side?: "left" | "right";
 };
 
 export default function LivePhotoPane({
   terms,
-  count = 18,
+  count = 12,
   className = "",
   side = "left",
 }: Props) {
-  const [images, setImages] = React.useState<Img[]>([]);
-  const [err, setErr] = React.useState<string | null>(null);
+  // ...your existing fetching/preloading code...
 
-  React.useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("/api/images", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ terms, count }),
-          cache: "no-store",
-        });
-        if (!res.ok) throw new Error(`images: ${res.status}`);
-        const json = await res.json();
-        const imgs: Img[] = Array.isArray(json?.images)
-          ? json.images.filter((x: any) => x?.url)
-          : [];
-        if (!cancelled) setImages(imgs);
-      } catch (e: any) {
-        if (!cancelled) setErr(e?.message || "image fetch failed");
-        // soft fail; keep UI
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [JSON.stringify(terms), count]);
-
-  // Subtle alignment bias so the edges feel “anchored”
-  const justify =
-    side === "left" ? "items-start text-left" : "items-end text-right";
+  // Example of using `side` to tweak alignment or gradient direction:
+  const railAlign = side === "left" ? "items-start" : "items-end";
 
   return (
-    <aside
-      className={`w-full ${className}`}
-      aria-label={side === "left" ? "left photo rail" : "right photo rail"}
-    >
-      {/* Masonry-ish: use CSS columns; avoid layout thrash */}
-      <div
-        className={`columns-2 xl:columns-3 gap-3 ${justify}`}
-        style={{ columnFill: "balance" as any }}
-      >
-        {images.map((im, i) => (
-          <figure key={`${im.url}-${i}`} className="mb-3 break-inside-avoid">
-            <div className="relative w-full overflow-hidden rounded-xl shadow-sm">
-              {/* Use a fixed aspect ratio container for smooth paint */}
-              <div className="relative w-full" style={{ paddingTop: "70%" }}>
-                <Image
-                  src={im.url}
-                  alt={im.title || "Travel photo"}
-                  fill
-                  sizes="(max-width: 1024px) 40vw, 20vw"
-                  className="object-cover"
-                  loading="lazy"
-                />
-              </div>
-            </div>
-          </figure>
-        ))}
-      </div>
-      {err && (
-        <div className="mt-2 text-xs text-neutral-500">
-          (Images delayed: {err})
-        </div>
-      )}
-    </aside>
+    <div className={`flex flex-col gap-3 ${railAlign} ${className}`}>
+      {/* your existing collage grid */}
+      {/* Example skeleton illustrating placement; keep your current map over images */}
+      {/* <div className="grid grid-cols-2 gap-3 w-full"> ... </div> */}
+    </div>
   );
 }
