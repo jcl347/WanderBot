@@ -8,12 +8,28 @@ type Img = { url: string; title?: string; source: "wikimedia" };
 
 type Props = {
   terms: string[];
-  count?: number;            // target number of tiles
+  count?: number;
   className?: string;
   side?: "left" | "right";
 };
 
-async function fetchImages(terms: string[], count: number, lenient = false): Promise<Img[]> {
+function hashToInt(s: string) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function pickVariant(term: string) {
+  const n = hashToInt(term) % 100;
+  if (n < 50) return "square" as const;    // 50%
+  if (n < 80) return "landscape" as const; // 30%
+  return "portrait" as const;              // 20%
+}
+
+async function fetchBatch(terms: string[], count: number, lenient = false): Promise<Img[]> {
   const res = await fetch("/api/images", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -22,19 +38,14 @@ async function fetchImages(terms: string[], count: number, lenient = false): Pro
       terms,
       count,
       source: "wikimedia",
+      // tell your route it's ok to relax filtering if needed
       lenient,
     }),
   });
   if (!res.ok) return [];
   const json = await res.json();
-  return (Array.isArray(json?.images) ? json.images : []).filter((x: any) => x?.url) as Img[];
-}
-
-function pad(images: Img[], n: number): Img[] {
-  if (images.length >= n) return images.slice(0, n);
-  const out: Img[] = [];
-  for (let i = 0; i < n; i++) out.push(images[i % Math.max(1, images.length)]);
-  return out;
+  const imgs = (Array.isArray(json?.images) ? json.images : []).filter((x: any) => x?.url) as Img[];
+  return imgs;
 }
 
 export default function LivePhotoPane({ terms, count = 36, className, side = "left" }: Props) {
@@ -42,19 +53,20 @@ export default function LivePhotoPane({ terms, count = 36, className, side = "le
 
   React.useEffect(() => {
     let cancelled = false;
+    const primary = terms.slice(0, 32);
 
     async function run() {
-      const primary = terms.slice(0, 32);
-      let imgs = await fetchImages(primary, Math.max(28, count), false);
+      // 1) primary try
+      let imgs = await fetchBatch(primary, Math.max(24, count), false);
 
-      // Fallback: city-only + lenient filters if too few
-      if (!cancelled && imgs.length < 12) {
-        const cityOnly = Array.from(new Set(primary.map((t) => t.split(" ")[0]))).slice(0, 8);
-        const more = await fetchImages(cityOnly.length ? cityOnly : primary, Math.max(28, count), true);
+      // 2) fallback if too few → re-query with city-only simplified terms & lenient filter
+      if (!cancelled && imgs.length <= 8) {
+        const cityOnly = Array.from(new Set(primary.map((t) => t.split(" ")[0])).values()).slice(0, 6);
+        const more = await fetchBatch(cityOnly.length ? cityOnly : primary, Math.max(24, count), true);
         if (more.length > imgs.length) imgs = more;
       }
 
-      if (!cancelled) setImages(pad(imgs, Math.max(28, count)));
+      if (!cancelled) setImages(imgs.slice(0, Math.max(24, count)));
     }
 
     run();
@@ -65,32 +77,50 @@ export default function LivePhotoPane({ terms, count = 36, className, side = "le
     <aside
       aria-label={`${side} photo collage`}
       className={[
-        // Masonry: many small tiles
-        "columns-2 md:columns-3 gap-3",
-        // Keep rails visually light
-        "opacity-95",
+        "grid grid-flow-dense gap-3",
+        // more columns so many tiles appear at once
+        "grid-cols-2 sm:grid-cols-3 md:grid-cols-3",
+        // small base row → tight masonry
+        "auto-rows-[6px]",
         className || "",
       ].join(" ")}
     >
-      {images.map((img, i) => (
-        <figure
-          key={`${img.url}-${i}`}
-          className="mb-3 break-inside-avoid rounded-xl bg-white/60 ring-1 ring-black/5 shadow-sm overflow-hidden"
-          title={img.title || ""}
-        >
-          {/* Short, fixed-height tiles → no more giant posters */}
-          <div className="relative w-full h-28 md:h-32">
-            <Image
-              src={img.url}
-              alt={img.title || "Travel photo"}
-              fill
-              sizes="(max-width: 640px) 40vw, (max-width: 1024px) 28vw, 20vw"
-              className="object-cover"
-              priority={i < 6}
-            />
-          </div>
-        </figure>
-      ))}
+      {images.map((img, i) => {
+        const term = terms[i % Math.max(1, terms.length)] || "";
+        const variant = pickVariant(term);
+
+        // keep spans bounded to avoid a single enormous tile
+        const spec =
+          variant === "square"
+            ? { wrap: "aspect-square", col: "col-span-1", row: "row-span-[22]" }     // ~132px
+            : variant === "landscape"
+            ? { wrap: "aspect-[4/3]",    col: "col-span-2", row: "row-span-[22]" }
+            : { wrap: "aspect-[3/4]",    col: "col-span-1", row: "row-span-[28]" }; // a bit taller
+
+        return (
+          <figure
+            key={`${img.url}-${i}`}
+            className={[
+              "overflow-hidden rounded-xl bg-white/60 shadow-sm",
+              "ring-1 ring-black/5",
+              spec.col,
+              spec.row,
+            ].join(" ")}
+            title={img.title || ""}
+          >
+            <div className={spec.wrap}>
+              <Image
+                src={img.url}
+                alt={img.title || "Travel photo"}
+                fill
+                sizes="(max-width: 640px) 45vw, (max-width: 1024px) 28vw, 20vw"
+                className="object-cover"
+                priority={i < 4}
+              />
+            </div>
+          </figure>
+        );
+      })}
     </aside>
   );
 }
