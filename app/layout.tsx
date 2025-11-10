@@ -1,3 +1,4 @@
+// app/layout.tsx
 import type { Metadata } from "next";
 import localFont from "next/font/local";
 import "./globals.css";
@@ -43,20 +44,30 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html
+      lang="en"
+      className="h-full w-full overflow-x-clip bg-white"
+    >
       <head>
         {/* Speed up Wikimedia image fetches */}
-        <link rel="preconnect" href="https://commons.wikimedia.org" />
-        <link rel="preconnect" href="https://upload.wikimedia.org" />
+        <link rel="preconnect" href="https://commons.wikimedia.org" crossOrigin="anonymous" />
+        <link rel="preconnect" href="https://upload.wikimedia.org" crossOrigin="anonymous" />
         <link rel="dns-prefetch" href="https://commons.wikimedia.org" />
         <link rel="dns-prefetch" href="https://upload.wikimedia.org" />
+        {/* Optional: ensure consistent viewport handling */}
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
       </head>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={[
+          geistSans.variable,
+          geistMono.variable,
+          "antialiased",
+          "min-h-screen w-full overflow-x-clip text-stone-900",
+          "bg-gray-200", // keep your subtle page bg (BackgroundMap overlays its own)
+        ].join(" ")}
       >
-        <div className="flex h-screen bg-gray-200 w-full flex-col text-stone-900">
-          <main>{children}</main>
-        </div>
+        {/* No fixed-height wrapper; let pages grow naturally */}
+        <main className="w-full min-h-screen">{children}</main>
       </body>
     </html>
   );
