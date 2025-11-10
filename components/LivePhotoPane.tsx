@@ -13,7 +13,7 @@ type Props = {
   cols?: RailCols;
 };
 
-/* ------------ helpers ------------ */
+/* ---------------- helpers ---------------- */
 async function fetchImages(terms: string[], count: number): Promise<Img[]> {
   if (!terms?.length) return [];
   try {
@@ -42,8 +42,12 @@ async function fetchImages(terms: string[], count: number): Promise<Img[]> {
 function scenicScore(img: Img): number {
   const t = (img.title || "").toLowerCase();
   const u = (img.url || "").toLowerCase();
-  const plus = /\b(mountain|alps|rockies|lake|beach|coast|ocean|harbor|valley|forest|park|trail|panorama|view|skyline|river|bay|island|waterfall|bridge|national\s+park)\b/.test(t+u);
-  const minus = /\b(document|scan|logo|poster|pamphlet|map|flag|seal|diagram|book|newspaper|magazine)\b/.test(t+u);
+  const plus = /\b(mountain|alps|rockies|canyon|lake|beach|coast|ocean|harbor|valley|forest|park|trail|panorama|view|skyline|river|bay|island|waterfall|bridge|national\s+park|scenic|landscape)\b/.test(
+    t + u
+  );
+  const minus = /\b(document|scan|poster|logo|map|flag|seal|book|magazine|newspaper|pamphlet|diagram)\b/.test(
+    t + u
+  );
   return (plus ? 2 : 0) - (minus ? 2 : 0);
 }
 
@@ -56,18 +60,20 @@ function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 
-function colsClass(n?: number, prefix?: string) {
-  const pre = prefix ?? "";
-  return n === 1 ? `${pre}grid-cols-1`
-       : n === 2 ? `${pre}grid-cols-2`
-       : n === 3 ? `${pre}grid-cols-3`
-       : `${pre}grid-cols-2`;
+function colsClass(n?: number, prefix = "") {
+  return n === 1
+    ? `${prefix}grid-cols-1`
+    : n === 2
+    ? `${prefix}grid-cols-2`
+    : n === 3
+    ? `${prefix}grid-cols-3`
+    : `${prefix}grid-cols-4`;
 }
 
-/* ------------ component ------------ */
+/* ---------------- component ---------------- */
 export default function LivePhotoPane({
   terms,
-  count = 28,
+  count = 60,
   side = "left",
   className,
   cols,
@@ -77,8 +83,10 @@ export default function LivePhotoPane({
   React.useEffect(() => {
     let alive = true;
     (async () => {
-      const fetched = await fetchImages(terms, Math.max(24, count));
+      const fetched = await fetchImages(terms, Math.max(60, count));
       if (!alive) return;
+
+      // scenic first, but keep variety
       const scored = fetched.map((im) => ({ im, s: scenicScore(im) }));
       const buckets = scored.reduce<Record<number, Img[]>>((acc, { im, s }) => {
         (acc[s] ||= []).push(im);
@@ -89,77 +97,74 @@ export default function LivePhotoPane({
       for (const r of ranks) scenicFirst.push(...shuffle(buckets[r]));
       setImages(scenicFirst);
     })();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, [JSON.stringify(terms), count]);
 
   const plan = {
     sm: cols?.sm ?? 2,
-    md: cols?.md ?? 2,
-    lg: cols?.lg ?? 2, // ⬅️ fewer columns => larger tiles
-    xl: cols?.xl ?? 2,
+    md: cols?.md ?? 3,
+    lg: cols?.lg ?? 3,
+    xl: cols?.xl ?? 4,
   };
 
-  // Larger vertical rhythm → bigger row units
-  // We also increase row spans so tiles get visually chunky.
-  const n = images.length;
-  const bigN = Math.max(6, Math.floor(n * 0.40));
-  const medN = Math.max(bigN + 6, Math.floor(n * 0.75));
+  // No row-span = no overlap. We vary ONLY column span and aspect ratio.
+  // Scenic images occasionally get a wider slot (col-span-2) on large screens.
+  const variants: Array<{ cls: string; aspect: string; scenicWide?: boolean }> = [
+    { cls: "", aspect: "aspect-[4/3]" },
+    { cls: "", aspect: "aspect-square" },
+    { cls: "", aspect: "aspect-[3/4]" },
+    { cls: "lg:col-span-2", aspect: "aspect-[16/10]", scenicWide: true },
+    { cls: "", aspect: "aspect-[4/3]" },
+    { cls: "", aspect: "aspect-square" },
+    { cls: "", aspect: "aspect-[3/4]" },
+    { cls: "lg:col-span-2", aspect: "aspect-[16/9]", scenicWide: true },
+  ];
+
+  const pickVariant = (i: number) => variants[i % variants.length];
 
   return (
-    <aside
+    <div
       aria-label={`${side} photo border`}
       className={[
-        "grid grid-flow-dense gap-4 md:gap-5",
-        "auto-rows-[14px] md:auto-rows-[16px]", // ⬅️ bigger base row height
+        "grid grid-flow-row dense",
+        "gap-6 md:gap-7", // ⬅️ visible gaps so nothing feels crowded
         colsClass(plan.sm),
         colsClass(plan.md, "md:"),
         colsClass(plan.lg, "lg:"),
         colsClass(plan.xl, "xl:"),
+        "overflow-visible",
         className || "",
       ].join(" ")}
     >
       {images.map((img, i) => {
-        const band = i < bigN ? "big" : i < medN ? "med" : "sm";
-        const span =
-          band === "big"
-            ? (i % 3 === 0
-                ? "col-span-2 row-span-[42] md:row-span-[48]" // wide & tall
-                : i % 3 === 1
-                ? "col-span-1 row-span-[52]" // tall portrait
-                : "col-span-2 row-span-[38]") // wide
-            : band === "med"
-            ? (i % 3 === 0
-                ? "col-span-1 row-span-[34]"
-                : i % 3 === 1
-                ? "col-span-2 row-span-[30]"
-                : "col-span-1 row-span-[30]")
-            : (i % 2 === 0
-                ? "col-span-1 row-span-[22]"
-                : "col-span-1 row-span-[24]");
+        const v = pickVariant(i);
+        const isScenic = scenicScore(img) > 0;
+        const colSpan = isScenic && v.scenicWide ? "lg:col-span-2" : v.cls;
+
+        const figureCls = [
+          // shadow + ring + rounded for clear separation (no visual overlap)
+          "rounded-2xl overflow-hidden shadow-sm ring-1 ring-black/5 bg-white/70",
+          v.aspect,
+          colSpan,
+        ].join(" ");
 
         return (
-          <figure
-            key={`${img.url}-${i}`}
-            className={[
-              "rounded-2xl overflow-hidden shadow-sm ring-1 ring-black/5 bg-white/70",
-              "min-h-[160px]", // ⬅️ minimum visible size
-              span,
-            ].join(" ")}
-            title={img.title || ""}
-          >
+          <figure key={`${img.url}-${i}`} className={figureCls} title={img.title || ""}>
             <div className="relative w-full h-full">
               <Image
                 fill
                 src={img.url}
                 alt={img.title || "Travel photo"}
-                sizes="(max-width: 768px) 92vw, 560px" // ⬅️ match rail width
+                sizes="(max-width: 768px) 100vw, 920px"
                 className="object-cover"
-                priority={i < 6}
+                priority={i < 8}
               />
             </div>
           </figure>
         );
       })}
-    </aside>
+    </div>
   );
 }
