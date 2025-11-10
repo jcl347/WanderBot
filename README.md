@@ -26,9 +26,7 @@ __        __               _                 ____        _
 - [🧱 Important Files](#-important-files)
 - [🔍 Image Strategy](#-image-strategy)
 - [⚙️ Configuration Notes](#️-configuration-notes)
-- [🧪 Troubleshooting](#-troubleshooting)
 - [🗺️ Roadmap](#️-roadmap)
-- [🤝 Contributing](#-contributing)
 - [📄 License](#-license)
 
 ---
@@ -250,43 +248,12 @@ export default nextConfig;
 
 ---
 
-## 🧪 Troubleshooting
-
-- **No images / 401 from `/api/images`**
-  - Ensure `NEXT_PUBLIC_BASE_URL` matches your deployed URL (e.g., `https://your-app.vercel.app`).
-  - Confirm `next.config.mjs` includes Wikimedia `remotePatterns`.
-  - In Vercel: set env vars for **Production** and **Preview**.
-
-- **405 on `/api/images`**
-  - Client method mismatch. This repo expects `POST` for `/api/images`.
-
-- **Slow first load of rails**
-  - Preload uses server fetch + caching headers; verify they’re present (see config above).
-  - Reduce preload `count` if bandwidth constrained.
-
-- **“This page could not be found” after form submission**
-  - Verify `app/results/[id]/page.tsx` exists and client routes to `/results/${planId}`.
-
-- **TypeScript prop errors**
-  - Ensure `LivePhotoPane` props match usage (`terms`, `count`, optional `side`/`orientation`, `className`).
-  - Update all call sites when refactoring prop names.
-
----
-
 ## 🗺️ Roadmap
 - ✈️ Real fare integrations by origin airport
 - 🧭 Day-by-day micro-itineraries
 - 🧪 Image-term strategy A/Bs
 - 🧑‍🤝‍🧑 Share/collab mode
 - 📦 Export (PDF / Notion)
-
----
-
-## 🤝 Contributing
-PRs welcome. Please:
-- Validate inputs/outputs with Zod.
-- Prefer server-side preloading for expensive operations.
-- Keep the UI airy, readable, and photo-forward.
 
 ---
 
