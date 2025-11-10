@@ -1,97 +1,168 @@
-// components/LivePhotoPane.tsx
 "use client";
 
 import * as React from "react";
 import Image from "next/image";
 
-type Img = { url: string; title?: string; source: "wikimedia" };
-
+type Img = { url: string; title?: string; source: "wikimedia" | "openverse" };
+type RailCols = { sm?: number; md?: number; lg?: number; xl?: number };
 type Props = {
   terms: string[];
+  count?: number;
+  side?: "left" | "right";
   className?: string;
-  /** Optional: force a certain number of columns for the rail at different breakpoints */
-  cols?: { base?: number; sm?: number; md?: number; lg?: number; xl?: number };
+  cols?: RailCols;
 };
 
-/** Heuristic: “scenic” if term includes these keywords => bigger tile */
-const SCENIC_HINTS = [
-  "beach","coast","sea","ocean","bay","harbor","harbour","lake","river","waterfall",
-  "island","mountain","peak","alps","glacier","park","forest","trail","canyon","valley",
-  "skyline","old town","historic center","plaza","square","promenade","pier","cliffs",
-  "desert","dunes","botanical","garden","coastline","bridge","castle","cathedral","temple"
-];
-
-function isScenicTerm(term: string) {
-  const t = term.toLowerCase();
-  return SCENIC_HINTS.some(k => t.includes(k));
-}
-
-/** Hit our images endpoint for a term list */
-async function fetchImages(terms: string[]): Promise<Img[]> {
+/* ---------------- helpers ---------------- */
+async function fetchImages(terms: string[], count: number): Promise<Img[]> {
+  if (!terms?.length) return [];
   try {
     const res = await fetch("/api/images", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ terms, count: 64 }) // pull a bunch; the grid will choose what to show
+      body: JSON.stringify({ terms, count }),
+      cache: "force-cache",
     });
     if (!res.ok) return [];
-    const json = await res.json();
-    return Array.isArray(json?.images) ? json.images.slice(0, 64) : [];
+    const data = await res.json();
+    const raw: Img[] = Array.isArray(data?.images) ? data.images : [];
+    const seen = new Set<string>();
+    const out: Img[] = [];
+    for (const im of raw) {
+      if (!im?.url || seen.has(im.url)) continue;
+      seen.add(im.url);
+      out.push(im);
+    }
+    return out;
   } catch {
     return [];
   }
 }
 
-export default function LivePhotoPane({ terms, className, cols }: Props) {
+function scenicScore(img: Img): number {
+  const t = (img.title || "").toLowerCase();
+  const u = (img.url || "").toLowerCase();
+  const plus = /\b(mountain|alps|rockies|canyon|lake|beach|coast|ocean|harbor|valley|forest|park|trail|panorama|view|skyline|river|bay|island|waterfall|bridge|national\s+park|scenic|landscape)\b/.test(
+    t + u
+  );
+  const minus = /\b(document|scan|poster|logo|map|flag|seal|book|magazine|newspaper|pamphlet|diagram)\b/.test(
+    t + u
+  );
+  return (plus ? 2 : 0) - (minus ? 2 : 0);
+}
+
+function shuffle<T>(arr: T[]): T[] {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function colsClass(n?: number, prefix = "") {
+  return n === 1
+    ? `${prefix}grid-cols-1`
+    : n === 2
+    ? `${prefix}grid-cols-2`
+    : n === 3
+    ? `${prefix}grid-cols-3`
+    : `${prefix}grid-cols-4`;
+}
+
+/* ---------------- component ---------------- */
+export default function LivePhotoPane({
+  terms,
+  count = 60,
+  side = "left",
+  className,
+  cols,
+}: Props) {
   const [images, setImages] = React.useState<Img[]>([]);
+
   React.useEffect(() => {
-    let on = true;
-    fetchImages(terms).then((imgs) => { if (on) setImages(imgs || []); });
-    return () => { on = false; };
-  }, [terms.join("|")]);
+    let alive = true;
+    (async () => {
+      const fetched = await fetchImages(terms, Math.max(60, count));
+      if (!alive) return;
 
-  // Column utilities (default 3 on large, 2 on small)
-  const colBase = cols?.base ?? 2;
-  const colSm   = cols?.sm   ?? 2;
-  const colMd   = cols?.md   ?? 2;
-  const colLg   = cols?.lg   ?? 3;
-  const colXl   = cols?.xl   ?? 3;
+      // scenic first, but keep variety
+      const scored = fetched.map((im) => ({ im, s: scenicScore(im) }));
+      const buckets = scored.reduce<Record<number, Img[]>>((acc, { im, s }) => {
+        (acc[s] ||= []).push(im);
+        return acc;
+      }, {});
+      const ranks = Object.keys(buckets).map(Number).sort((a, b) => b - a);
+      const scenicFirst: Img[] = [];
+      for (const r of ranks) scenicFirst.push(...shuffle(buckets[r]));
+      setImages(scenicFirst);
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [JSON.stringify(terms), count]);
 
-  // We’ll render tiles with “dense” packing and zero gap so they’re perfectly flush.
-  // Variation comes from aspect ratios + occasional column spans.
+  const plan = {
+    sm: cols?.sm ?? 2,
+    md: cols?.md ?? 3,
+    lg: cols?.lg ?? 3,
+    xl: cols?.xl ?? 4,
+  };
+
+  // No row-span = no overlap. We vary ONLY column span and aspect ratio.
+  // Scenic images occasionally get a wider slot (col-span-2) on large screens.
+  const variants: Array<{ cls: string; aspect: string; scenicWide?: boolean }> = [
+    { cls: "", aspect: "aspect-[4/3]" },
+    { cls: "", aspect: "aspect-square" },
+    { cls: "", aspect: "aspect-[3/4]" },
+    { cls: "lg:col-span-2", aspect: "aspect-[16/10]", scenicWide: true },
+    { cls: "", aspect: "aspect-[4/3]" },
+    { cls: "", aspect: "aspect-square" },
+    { cls: "", aspect: "aspect-[3/4]" },
+    { cls: "lg:col-span-2", aspect: "aspect-[16/9]", scenicWide: true },
+  ];
+
+  const pickVariant = (i: number) => variants[i % variants.length];
+
   return (
     <div
+      aria-label={`${side} photo border`}
       className={[
-        "grid grid-flow-dense gap-0",                       // flush, dense grid
-        `grid-cols-${colBase}`,
-        `sm:grid-cols-${colSm}`,
-        `md:grid-cols-${colMd}`,
-        `lg:grid-cols-${colLg}`,
-        `xl:grid-cols-${colXl}`,
-        className || ""
+        "grid grid-flow-row dense",
+        "gap-6 md:gap-7", // ⬅️ visible gaps so nothing feels crowded
+        colsClass(plan.sm),
+        colsClass(plan.md, "md:"),
+        colsClass(plan.lg, "lg:"),
+        colsClass(plan.xl, "xl:"),
+        "overflow-visible",
+        className || "",
       ].join(" ")}
-      style={{ contain: "layout paint size" }}
-      aria-hidden
     >
-      {images.map((im, i) => {
-        const scenic = isScenicTerm(terms[i % terms.length] || "");
-        // Scenic = bigger & wider; otherwise mix of squares/portrait/video
-        // Use CSS aspect-ratio to avoid any whitespace.
-        const sizeClass = scenic
-          ? "col-span-2 aspect-[4/3] md:col-span-2" // wide scenic tile
-          : (i % 3 === 0 ? "aspect-square" : i % 3 === 1 ? "aspect-[3/4]" : "aspect-video");
+      {images.map((img, i) => {
+        const v = pickVariant(i);
+        const isScenic = scenicScore(img) > 0;
+        const colSpan = isScenic && v.scenicWide ? "lg:col-span-2" : v.cls;
+
+        const figureCls = [
+          // shadow + ring + rounded for clear separation (no visual overlap)
+          "rounded-2xl overflow-hidden shadow-sm ring-1 ring-black/5 bg-white/70",
+          v.aspect,
+          colSpan,
+        ].join(" ");
 
         return (
-          <div key={`${im.url}-${i}`} className={["relative overflow-hidden", sizeClass].join(" ")}>
-            <Image
-              src={im.url}
-              alt={im.title || "destination photo"}
-              fill
-              className="object-cover select-none pointer-events-none"
-              sizes="(max-width: 640px) 40vw, (max-width: 1024px) 25vw, 20vw"
-              priority={i < 6}
-            />
-          </div>
+          <figure key={`${img.url}-${i}`} className={figureCls} title={img.title || ""}>
+            <div className="relative w-full h-full">
+              <Image
+                fill
+                src={img.url}
+                alt={img.title || "Travel photo"}
+                sizes="(max-width: 768px) 100vw, 920px"
+                className="object-cover"
+                priority={i < 8}
+              />
+            </div>
+          </figure>
         );
       })}
     </div>
