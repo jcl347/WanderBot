@@ -12,8 +12,8 @@ export default function LiveCollage({
   leftTerms = [],
   rightTerms = [],
   bottomTerms,
-  railWidth = 360,          // slightly slimmer rails so center can be thicker
-  centerMinWidth = 840,     // make the middle pane “thick”
+  railWidth = 360,
+  centerMinWidth = 840,
   children,
   className = "",
   railClassName = "",
@@ -40,7 +40,7 @@ export default function LiveCollage({
   return (
     <div className={className}>
       <div
-        className="hidden md:grid gap-8"
+        className="hidden md:grid gap-7" // was gap-8; tiny reduction trims left whitespace feel
         style={{
           gridTemplateColumns: `${railWidth}px minmax(${centerMinWidth}px, 1fr) ${railWidth}px`,
         }}

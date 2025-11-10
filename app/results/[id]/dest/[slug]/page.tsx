@@ -1,5 +1,4 @@
 // app/results/[id]/dest/[slug]/page.tsx
-import Link from "next/link";
 import Head from "next/head";
 import { notFound } from "next/navigation";
 import BackgroundMap from "@/components/BackgroundMap";
@@ -47,16 +46,10 @@ export default async function DestDetail({ params }: PageProps) {
         <link rel="preconnect" href="https://images.openverse.engineering" crossOrigin="" />
       </Head>
 
-      {/* Top bar aligned to the same centered width as the content */}
-      <div className="mx-auto w-full max-w-[1320px] px-4 md:px-6">
-        <div className="flex items-center justify-between mb-2">
+      {/* Simple header: badge only; slightly asymmetric padding to shift content left */}
+      <div className="mx-auto w-full max-w-[1320px] pl-2 pr-6 md:pl-3 md:pr-8">
+        <div className="flex items-center justify-end mb-2">
           <RobotBadge />
-          <Link
-            href={`/results/${id}`}
-            className="text-sm text-sky-700 hover:underline"
-          >
-            &larr; Back to results
-          </Link>
         </div>
       </div>
 
