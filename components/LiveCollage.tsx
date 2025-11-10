@@ -12,8 +12,8 @@ export default function LiveCollage({
   leftTerms = [],
   rightTerms = [],
   bottomTerms,
-  railWidth = 360,          // slightly slimmer rails so center can be thicker
-  centerMinWidth = 840,     // make the middle pane “thick”
+  railWidth = 440,          // wider rails so images are more visible
+  centerMinWidth = 1100,    // thicker middle pane
   children,
   className = "",
   railClassName = "",
@@ -34,45 +34,52 @@ export default function LiveCollage({
       bottomTerms && bottomTerms.length
         ? bottomTerms
         : [...leftTerms, ...rightTerms];
-    return Array.from(new Set(b)).slice(0, 16);
+    return Array.from(new Set(b)).slice(0, 24);
   }, [bottomTerms, leftTerms, rightTerms]);
+
+  // Merge a pleasant default rail gap with any custom class passed in
+  const mergedRailClass = ["gap-3 md:gap-4", railClassName].filter(Boolean).join(" ");
 
   return (
     <div className={className}>
       <div
-        className="hidden md:grid gap-8"
+        className="hidden md:grid items-start gap-6 md:gap-8"
         style={{
+          // push rails closer while keeping a robust center
           gridTemplateColumns: `${railWidth}px minmax(${centerMinWidth}px, 1fr) ${railWidth}px`,
         }}
       >
-        <div className="sticky top-20 self-start">
+        {/* Left rail */}
+        <aside className="sticky top-20 self-start">
           {leftTerms.length > 0 && (
             <LivePhotoPane
               terms={leftTerms}
-              count={24}
-              columns={3}
-              className={railClassName}
+              count={48}          // more images
+              columns={2}         // larger tiles; LivePhotoPane handles layout
+              className={mergedRailClass}
             />
           )}
-        </div>
+        </aside>
 
-        <div className="min-w-0">{children}</div>
+        {/* Center content */}
+        <main className="min-w-0">{children}</main>
 
-        <div className="sticky top-20 self-start">
+        {/* Right rail */}
+        <aside className="sticky top-20 self-start">
           {rightTerms.length > 0 && (
             <LivePhotoPane
               terms={rightTerms}
-              count={24}
-              columns={3}
-              className={railClassName}
+              count={48}
+              columns={2}
+              className={mergedRailClass}
             />
           )}
-        </div>
+        </aside>
       </div>
 
       {showBottomOnMobile && mergedBottom.length > 0 && (
         <div className="md:hidden mt-6">
-          <LivePhotoPane terms={mergedBottom} count={16} columns={2} />
+          <LivePhotoPane terms={mergedBottom} count={20} columns={2} className="gap-3" />
         </div>
       )}
     </div>

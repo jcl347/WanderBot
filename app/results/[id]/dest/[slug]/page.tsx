@@ -1,5 +1,4 @@
 // app/results/[id]/dest/[slug]/page.tsx
-import Link from "next/link";
 import Head from "next/head";
 import { notFound } from "next/navigation";
 import BackgroundMap from "@/components/BackgroundMap";
@@ -39,7 +38,7 @@ export default async function DestDetail({ params }: PageProps) {
 
   return (
     <BackgroundMap>
-      {/* Preconnect to the image CDNs we use so rails paint faster */}
+      {/* Preconnect so rails paint faster */}
       <Head>
         <link rel="dns-prefetch" href="https://upload.wikimedia.org" />
         <link rel="preconnect" href="https://upload.wikimedia.org" crossOrigin="" />
@@ -47,20 +46,14 @@ export default async function DestDetail({ params }: PageProps) {
         <link rel="preconnect" href="https://images.openverse.engineering" crossOrigin="" />
       </Head>
 
-      {/* Top bar aligned to the same centered width as the content */}
-      <div className="mx-auto w-full max-w-[1320px] px-4 md:px-6">
-        <div className="flex items-center justify-between mb-2">
+      {/* Header bar (no back link) and a subtle left shift to reclaim blank space */}
+      <div className="mx-auto w-full max-w-[1850px] px-3 md:px-6 md:-ml-6">
+        <div className="flex items-center justify-end py-2">
           <RobotBadge />
-          <Link
-            href={`/results/${id}`}
-            className="text-sm text-sky-700 hover:underline"
-          >
-            &larr; Back to results
-          </Link>
         </div>
       </div>
 
-      {/* Client component renders center content + left/right image rails */}
+      {/* Center analytics + left/right rails */}
       <DestDetailClient dest={dest} />
     </BackgroundMap>
   );
