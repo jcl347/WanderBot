@@ -159,7 +159,6 @@ export default function DestDetailClient({ dest }: { dest: any }) {
     <LiveCollage
       leftTerms={leftTerms}
       rightTerms={rightTerms}
-      railWidth={240}                               // narrower rails
       className="mx-auto max-w-[1900px] px-4 md:px-8" // much wider center
       railClassName="max-w-full"
     >
