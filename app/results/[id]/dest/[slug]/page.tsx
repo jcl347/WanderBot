@@ -38,7 +38,7 @@ export default async function DestDetail({ params }: PageProps) {
 
   return (
     <BackgroundMap>
-      {/* Preconnect to the image CDNs we use so rails paint faster */}
+      {/* Preconnect to the image CDNs so rails paint faster */}
       <Head>
         <link rel="dns-prefetch" href="https://upload.wikimedia.org" />
         <link rel="preconnect" href="https://upload.wikimedia.org" crossOrigin="" />
@@ -46,15 +46,18 @@ export default async function DestDetail({ params }: PageProps) {
         <link rel="preconnect" href="https://images.openverse.engineering" crossOrigin="" />
       </Head>
 
-      {/* Simple header: badge only; slightly asymmetric padding to shift content left */}
-      <div className="mx-auto w-full max-w-[1320px] pl-2 pr-6 md:pl-3 md:pr-8">
+      {/* Top row (right-aligned badge). Back link removed */}
+      <div className="mx-auto w-full max-w-[1320px] px-4 md:px-6">
         <div className="flex items-center justify-end mb-2">
           <RobotBadge />
         </div>
       </div>
 
-      {/* Client component renders center content + left/right image rails */}
-      <DestDetailClient dest={dest} />
+      {/* Shift entire collage/grid left by the same padding the background adds */}
+      {/* This pulls the LEFT rail closer to the viewport edge without changing BackgroundMap */}
+      <div className="-ml-4 md:-ml-6">
+        <DestDetailClient dest={dest} />
+      </div>
     </BackgroundMap>
   );
 }
