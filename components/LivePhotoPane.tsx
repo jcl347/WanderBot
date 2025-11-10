@@ -1,27 +1,25 @@
+// components/LivePhotoPane.tsx
 "use client";
 
 import * as React from "react";
 import Image from "next/image";
 
+/** Minimal image shape returned by /api/images */
 type Img = {
   url: string;
   title?: string;
   source: "wikimedia" | "openverse";
 };
 
-type RailCols = {
-  sm?: number; // default 2
-  md?: number; // default 2
-  lg?: number; // default 3
-  xl?: number; // default 3
-};
-
 type Props = {
+  /** Search terms (already city-centric) */
   terms: string[];
-  count?: number;               // how many to fetch; we still display big tiles
+  /** Rough target number of images */
+  count?: number;
+  /** For a11y labeling (optional) */
   side?: "left" | "right";
+  /** Extra classes for outer container */
   className?: string;
-  cols?: RailCols;
 };
 
 /* ---------------- helpers ---------------- */
@@ -41,6 +39,7 @@ async function fetchImages(terms: string[], count: number): Promise<Img[]> {
     }
     const data = await res.json();
     const raw: Img[] = Array.isArray(data?.images) ? data.images : [];
+    // dedupe by URL
     const seen = new Set<string>();
     const out: Img[] = [];
     for (const im of raw) {
@@ -55,29 +54,25 @@ async function fetchImages(terms: string[], count: number): Promise<Img[]> {
   }
 }
 
+/** lightweight “is it scenery?” heuristic */
 function scenicScore(img: Img): number {
   const t = (img.title || "").toLowerCase();
   const u = (img.url || "").toLowerCase();
-
   const plus =
-    /\b(mountain|alps|rockies|lake|beach|coast|ocean|sea|harbor|valley|forest|park|trail|panorama|view|skyline|national\s+park|river|bay|cliff|desert|island|waterfall|bridge|castle|cathedral|old\s?town|harbour)\b/.test(
+    /\b(mountain|lake|beach|coast|ocean|sea|harbor|valley|forest|park|trail|panorama|view|skyline|national\s+park|river|bay)\b/.test(
       t
     ) ||
-    /\b(mountain|lake|beach|coast|ocean|sea|harbor|valley|forest|park|trail|panorama|view|skyline|river|bay|cliff|desert|island|waterfall|bridge|castle|cathedral|oldtown|harbour)\b/.test(
+    /\b(mountain|lake|beach|coast|ocean|sea|harbor|valley|forest|park|trail|panorama|view|skyline|river|bay)\b/.test(
       u
     );
-
   const minus =
-    /\b(document|scan|logo|poster|pamphlet|map|flag|seal|diagram|chart|newspaper|magazine|book|manuscript|catalog)\b/.test(
+    /\b(document|scan|logo|poster|pamphlet|map|flag|seal|diagram|chart|newspaper|magazine)\b/.test(
       t
-    ) ||
-    /\b(document|scan|logo|poster|pamphlet|map|flag|seal|diagram|chart|book|catalog)\b/.test(
-      u
-    );
-
-  return (plus ? 2 : 0) - (minus ? 2 : 0);
+    ) || /\b(document|scan|logo|poster|pamphlet|map|flag|seal|diagram|chart)\b/.test(u);
+  return (plus ? 1 : 0) - (minus ? 1 : 0);
 }
 
+/** shuffle to avoid monotony among same scores */
 function shuffle<T>(arr: T[], rnd = Math.random): T[] {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
@@ -87,29 +82,13 @@ function shuffle<T>(arr: T[], rnd = Math.random): T[] {
   return a;
 }
 
-function colsClass(n?: number, prefix?: string) {
-  switch (n) {
-    case 1:
-      return `${prefix ?? ""}grid-cols-1`;
-    case 2:
-      return `${prefix ?? ""}grid-cols-2`;
-    case 3:
-      return `${prefix ?? ""}grid-cols-3`;
-    case 4:
-      return `${prefix ?? ""}grid-cols-4`;
-    default:
-      return `${prefix ?? ""}grid-cols-2`;
-  }
-}
-
 /* ---------------- component ---------------- */
 
 export default function LivePhotoPane({
   terms,
-  count = 26,
+  count = 28, // fewer, bigger tiles
   side = "left",
   className,
-  cols,
 }: Props) {
   const [images, setImages] = React.useState<Img[]>([]);
 
@@ -119,7 +98,7 @@ export default function LivePhotoPane({
       const fetched = await fetchImages(terms, Math.max(18, count));
       if (!alive || !fetched.length) return;
 
-      // Scenic first, then everything else; keep some randomness
+      // sort by scenic score, shuffle equals
       const scored = fetched.map((im) => ({ im, s: scenicScore(im) }));
       const buckets = scored.reduce<Record<number, Img[]>>((acc, { im, s }) => {
         (acc[s] ||= []).push(im);
@@ -130,6 +109,7 @@ export default function LivePhotoPane({
         .sort((a, b) => b - a);
       const scenicFirst: Img[] = [];
       for (const r of ranks) scenicFirst.push(...shuffle(buckets[r]));
+
       setImages(scenicFirst);
     })();
     return () => {
@@ -137,81 +117,66 @@ export default function LivePhotoPane({
     };
   }, [JSON.stringify(terms), count]);
 
-  // Column plan for “photo border” rails:
-  //  - small screens: 2 cols
-  //  - md: 2 cols (bigger tiles)
-  //  - lg+: 3 cols (varied boarder look)
-  const plan = {
-    sm: cols?.sm ?? 2,
-    md: cols?.md ?? 2,
-    lg: cols?.lg ?? 3,
-    xl: cols?.xl ?? 3,
-  };
-
-  // Tile sizing bands → span rules (masonry-ish by grid)
-  // Use grid-auto-rows for consistent vertical rhythm.
-  // Big tiles occupy more vertical span to feel “featured”.
+  // We want 1–2 per row → use CSS grid with two columns on md+,
+  // single column on very small screens.
+  // Then vary height/shape by index, giving scenic-first items more area.
   const n = images.length;
-  const bigN = Math.max(6, Math.floor(n * 0.35));
-  const medN = Math.max(bigN + 6, Math.floor(n * 0.7));
+  const bigN = Math.max(4, Math.floor(n * 0.35)); // many larges to keep it bold
+  const medN = Math.max(bigN + 6, Math.floor(n * 0.75)); // cumulative middle band
 
   return (
     <aside
-      aria-label={`${side} photo border`}
+      aria-label={`${side} photo collage`}
       className={[
-        // base grid
-        "grid auto-rows-[10px] grid-flow-dense gap-3 md:gap-4",
-        colsClass(plan.sm),
-        colsClass(plan.md, "md:"),
-        colsClass(plan.lg, "lg:"),
-        colsClass(plan.xl, "xl:"),
+        // 1 col on small, 2 col on md+ for large, bold tiles
+        "grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4",
         "opacity-95",
         className || "",
       ].join(" ")}
     >
       {images.map((img, i) => {
+        // size band
         const band = i < bigN ? "big" : i < medN ? "med" : "sm";
 
-        // Row/col spans (masonry style). Bigger/landscape for top scenic items.
-        const span =
+        // shape variety (mix wides, squares, portrait)
+        // Keep overall heights generous; ensure not “too tall”.
+        const shape =
           band === "big"
             ? i % 3 === 0
-              ? "col-span-2 row-span-[30] md:row-span-[36]" // wide & tall
+              ? "aspect-[16/10]" // wide scenic hero
               : i % 3 === 1
-              ? "col-span-1 row-span-[36]" // tall portrait
-              : "col-span-2 row-span-[28]" // wide
+              ? "aspect-square"
+              : "aspect-[4/5]"
             : band === "med"
-            ? i % 3 === 0
-              ? "col-span-1 row-span-[28]"
-              : i % 3 === 1
-              ? "col-span-2 row-span-[24]"
-              : "col-span-1 row-span-[24]"
-            : i % 2 === 0
-            ? "col-span-1 row-span-[18]"
-            : "col-span-1 row-span-[20]";
+            ? i % 2 === 0
+              ? "aspect-[4/3]"
+              : "aspect-square"
+            : i % 3 === 0
+            ? "aspect-[5/4]"
+            : "aspect-square";
 
-        // Container tunes: border radius + soft ring so photos pop
+        // height caps (so nothing becomes a skyscraper)
+        const height =
+          band === "big"
+            ? "max-h-[18rem] md:max-h-[22rem]"
+            : band === "med"
+            ? "max-h-[14rem] md:max-h-[17rem]"
+            : "max-h-[11rem] md:max-h-[13rem]";
+
         return (
           <figure
             key={`${img.url}-${i}`}
-            className={[
-              "rounded-2xl overflow-hidden shadow-sm ring-1 ring-black/5 bg-white/70",
-              // Ensure grid spans work even when columns shrink
-              "min-h-[140px]",
-              // Span class
-              span,
-            ].join(" ")}
+            className="rounded-2xl bg-white/70 ring-1 ring-black/5 shadow-sm overflow-hidden"
             title={img.title || ""}
           >
-            <div className="relative w-full h-full">
+            <div className={`relative w-full ${shape} ${height}`}>
               <Image
                 fill
                 src={img.url}
                 alt={img.title || "Travel photo"}
-                // Don’t overconstrain sizes: rails are narrow; let browser pick
-                sizes="(max-width: 768px) 92vw, 420px"
+                sizes="(max-width: 768px) 90vw, 38vw"
                 className="object-cover"
-                priority={i < 6}
+                priority={i < 4}
               />
             </div>
           </figure>
