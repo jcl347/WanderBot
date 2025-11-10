@@ -25,7 +25,6 @@ __        __               _                 ____        _
 - [🛣️ Key Endpoints](#️-key-endpoints)
 - [🧱 Important Files](#-important-files)
 - [🔍 Image Strategy](#-image-strategy)
-- [⚙️ Configuration Notes](#️-configuration-notes)
 - [🗺️ Roadmap](#️-roadmap)
 - [📄 License](#-license)
 
@@ -206,45 +205,6 @@ next.config.mjs            # remote image hosts (Wikimedia)
 - Filter non-photos via Wikimedia metadata (exclude categories like documents, logos, flags, maps).
 - `next/image` handles responsive optimization; Wikimedia hosts are whitelisted.
 
----
-
-## ⚙️ Configuration Notes
-
-**`app/layout.tsx`**
-```ts
-export const metadata = {
-  title: { default: "Wanderbot", template: "%s · Wanderbot" },
-  description: "Plan smarter trips with airfare insights and gorgeous collages.",
-};
-```
-
-**`next.config.mjs`** (remote image hosts)
-```js
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  reactStrictMode: true,
-  images: {
-    remotePatterns: [
-      { protocol: "https", hostname: "upload.wikimedia.org" },
-      { protocol: "https", hostname: "commons.wikimedia.org" }
-    ],
-  },
-  experimental: { optimizeCss: false },
-  headers: async () => [
-    {
-      source: "/api/images",
-      headers: [
-        {
-          key: "Cache-Control",
-          value: "public, max-age=60, s-maxage=600, stale-while-revalidate=86400",
-        },
-      ],
-    },
-  ],
-};
-
-export default nextConfig;
-```
 
 ---
 
