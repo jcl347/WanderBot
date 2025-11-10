@@ -6,194 +6,94 @@ import Image from "next/image";
 
 type Img = { url: string; title?: string; source: "wikimedia" };
 
-type RailCols = {
-  base?: number;
-  sm?: number;
-  md?: number;
-  lg?: number;
-  xl?: number;
-};
-
 type Props = {
   terms: string[];
-  /** Optional maximum images to try to fetch (server may cap) */
-  count?: number;
-  /** Responsive columns for the rail */
-  cols?: RailCols;
   className?: string;
+  /** Optional: force a certain number of columns for the rail at different breakpoints */
+  cols?: { base?: number; sm?: number; md?: number; lg?: number; xl?: number };
 };
 
-function isLikelyPhoto(u: string) {
-  const url = u.toLowerCase();
-  // client-side belt-and-suspenders: avoid documents/maps/logos
-  const bad =
-    url.includes("logo") ||
-    url.includes("seal") ||
-    url.includes("emblem") ||
-    url.includes("flag_of") ||
-    url.includes("map") ||
-    url.includes(".svg"); // many wikimedia svgs are non-photos
-  return !bad;
+/** Heuristic: “scenic” if term includes these keywords => bigger tile */
+const SCENIC_HINTS = [
+  "beach","coast","sea","ocean","bay","harbor","harbour","lake","river","waterfall",
+  "island","mountain","peak","alps","glacier","park","forest","trail","canyon","valley",
+  "skyline","old town","historic center","plaza","square","promenade","pier","cliffs",
+  "desert","dunes","botanical","garden","coastline","bridge","castle","cathedral","temple"
+];
+
+function isScenicTerm(term: string) {
+  const t = term.toLowerCase();
+  return SCENIC_HINTS.some(k => t.includes(k));
 }
 
-export default function LivePhotoPane({
-  terms,
-  count = 60,
-  cols,
-  className,
-}: Props) {
-  const [imgs, setImgs] = React.useState<Img[] | null>(null);
-  const [err, setErr] = React.useState<string | null>(null);
-
-  // Default: a dense but readable rail, flush by default
-  const c = {
-    base: cols?.base ?? 2,
-    sm: cols?.sm ?? 2,
-    md: cols?.md ?? 3,
-    lg: cols?.lg ?? 3,
-    xl: cols?.xl ?? 4,
-  };
-
-  const gridClasses = [
-    "grid",
-    "gap-2", // small gap; the outer collage can control additional spacing
-    // responsive column counts
-    `grid-cols-${Math.max(1, c.base)}`,
-    `sm:grid-cols-${Math.max(1, c.sm)}`,
-    `md:grid-cols-${Math.max(1, c.md)}`,
-    `lg:grid-cols-${Math.max(1, c.lg)}`,
-    `xl:grid-cols-${Math.max(1, c.xl)}`,
-  ].join(" ");
-
-  React.useEffect(() => {
-    let cancelled = false;
-
-    async function run() {
-      setErr(null);
-      setImgs(null);
-
-      const clean = (terms || [])
-        .map((t) => String(t || "").trim())
-        .filter(Boolean);
-      if (clean.length === 0) {
-        setImgs([]);
-        return;
-      }
-
-      // Use pipe to separate (safe + server can split)
-      const qs = new URLSearchParams({
-        terms: clean.join("|"),
-        count: String(Math.max(1, Math.min(200, count))),
-        source: "wikimedia",
-      });
-
-      const url = `/api/images?${qs.toString()}`;
-      console.log("[LivePhotoPane] fetching:", url);
-
-      try {
-        const res = await fetch(url, { cache: "force-cache" });
-        if (!res.ok) {
-          const txt = await res.text().catch(() => String(res.status));
-          console.warn("[LivePhotoPane] non-OK:", res.status, txt);
-          if (!cancelled) setErr(`${res.status} fetching images`);
-          return;
-        }
-        const json = await res.json();
-        const list: Img[] = Array.isArray(json?.images)
-          ? json.images
-              .filter((x: any) => x && typeof x.url === "string")
-              .map((x: any) => ({
-                url: x.url as string,
-                title: typeof x.title === "string" ? x.title : undefined,
-                source: "wikimedia" as const,
-              }))
-          : [];
-
-        const filtered = list.filter((im) => isLikelyPhoto(im.url));
-        console.log(
-          "[LivePhotoPane] fetched:",
-          list.length,
-          "filtered:",
-          filtered.length
-        );
-
-        if (!cancelled) setImgs(filtered);
-      } catch (e: any) {
-        console.error("[LivePhotoPane] fetch error:", e?.message || e);
-        if (!cancelled) setErr(e?.message || "images fetch failed");
-      }
-    }
-
-    run();
-    return () => {
-      cancelled = true;
-    };
-  }, [JSON.stringify(terms), count]);
-
-  // Simple responsive "card" sizes for visual variance—no overlap
-  // We use a few tall/medium/short classes to break monotony.
-  function sizeClass(ix: number) {
-    // Heuristic: every 7th is tall, every 3rd is medium, rest short
-    if (ix % 7 === 0) return "row-span-2 h-64 md:h-80";
-    if (ix % 3 === 0) return "h-48 md:h-56";
-    return "h-40 md:h-44";
+/** Hit our images endpoint for a term list */
+async function fetchImages(terms: string[]): Promise<Img[]> {
+  try {
+    const res = await fetch("/api/images", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ terms, count: 64 }) // pull a bunch; the grid will choose what to show
+    });
+    if (!res.ok) return [];
+    const json = await res.json();
+    return Array.isArray(json?.images) ? json.images.slice(0, 64) : [];
+  } catch {
+    return [];
   }
+}
 
+export default function LivePhotoPane({ terms, className, cols }: Props) {
+  const [images, setImages] = React.useState<Img[]>([]);
+  React.useEffect(() => {
+    let on = true;
+    fetchImages(terms).then((imgs) => { if (on) setImages(imgs || []); });
+    return () => { on = false; };
+  }, [terms.join("|")]);
+
+  // Column utilities (default 3 on large, 2 on small)
+  const colBase = cols?.base ?? 2;
+  const colSm   = cols?.sm   ?? 2;
+  const colMd   = cols?.md   ?? 2;
+  const colLg   = cols?.lg   ?? 3;
+  const colXl   = cols?.xl   ?? 3;
+
+  // We’ll render tiles with “dense” packing and zero gap so they’re perfectly flush.
+  // Variation comes from aspect ratios + occasional column spans.
   return (
-    <div className={className}>
-      {err && (
-        <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded p-2 mb-2">
-          Couldn’t load images: {err}
-        </div>
-      )}
+    <div
+      className={[
+        "grid grid-flow-dense gap-0",                       // flush, dense grid
+        `grid-cols-${colBase}`,
+        `sm:grid-cols-${colSm}`,
+        `md:grid-cols-${colMd}`,
+        `lg:grid-cols-${colLg}`,
+        `xl:grid-cols-${colXl}`,
+        className || ""
+      ].join(" ")}
+      style={{ contain: "layout paint size" }}
+      aria-hidden
+    >
+      {images.map((im, i) => {
+        const scenic = isScenicTerm(terms[i % terms.length] || "");
+        // Scenic = bigger & wider; otherwise mix of squares/portrait/video
+        // Use CSS aspect-ratio to avoid any whitespace.
+        const sizeClass = scenic
+          ? "col-span-2 aspect-[4/3] md:col-span-2" // wide scenic tile
+          : (i % 3 === 0 ? "aspect-square" : i % 3 === 1 ? "aspect-[3/4]" : "aspect-video");
 
-      {!imgs && (
-        <div className={gridClasses}>
-          {Array.from({ length: 12 }).map((_, i) => (
-            <div
-              key={i}
-              className="animate-pulse bg-neutral-200 rounded-xl w-full h-36 md:h-40"
+        return (
+          <div key={`${im.url}-${i}`} className={["relative overflow-hidden", sizeClass].join(" ")}>
+            <Image
+              src={im.url}
+              alt={im.title || "destination photo"}
+              fill
+              className="object-cover select-none pointer-events-none"
+              sizes="(max-width: 640px) 40vw, (max-width: 1024px) 25vw, 20vw"
+              priority={i < 6}
             />
-          ))}
-        </div>
-      )}
-
-      {imgs && imgs.length === 0 && (
-        <div className="text-neutral-500 text-sm">
-          No images found for these terms.
-        </div>
-      )}
-
-      {imgs && imgs.length > 0 && (
-        <div className={gridClasses}>
-          {imgs.map((im, i) => (
-            <figure
-              key={`${im.url}-${i}`}
-              className={[
-                "relative overflow-hidden rounded-xl",
-                "bg-neutral-100",
-                sizeClass(i),
-              ].join(" ")}
-            >
-              <Image
-                src={im.url}
-                alt={im.title || "Destination photo"}
-                fill
-                sizes="(max-width: 768px) 40vw, (max-width: 1280px) 25vw, 20vw"
-                className="object-cover"
-                loading={i < 6 ? "eager" : "lazy"}
-                // Make Next.js less strict about external sizes
-                unoptimized={false}
-              />
-              {im.title && (
-                <figcaption className="absolute bottom-0 left-0 right-0 bg-black/30 text-[10px] text-white px-2 py-1 truncate">
-                  {im.title}
-                </figcaption>
-              )}
-            </figure>
-          ))}
-        </div>
-      )}
+          </div>
+        );
+      })}
     </div>
   );
 }
